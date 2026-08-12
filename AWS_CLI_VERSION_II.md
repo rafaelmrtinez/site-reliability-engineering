@@ -1,5 +1,31 @@
 # Amazon Web Services CLI Commands Version II
 
+## Table of Contents
+
+- [Create an EC2 Instance](#create-an-ec2-instance)
+- [Enable S3 public access by creating a Resource Policy](#enable-s3-public-access-by-creating-a-resource-policy)
+- [S3 Bucket hosted website url format](#s3-bucket-hosted-website-url-format)
+- [S3 Bucket url format](#s3-bucket-url-format)
+- [Hosting a static website using S3](#hosting-a-static-website-using-s3)
+- [Create S3 Lifecycle configuration](#create-s3-lifecycle-configuration)
+- [Create S3 bucket](#create-s3-bucket)
+- [Recover a versioned S3 object by delete the Delete Marker](#recover-a-versioned-s3-object-by-delete-the-delete-marker)
+- [List out bucket versions](#list-out-bucket-versions)
+- [Filter results with query](#filter-results-with-query)
+- [Get bucket configuration](#get-bucket-configuration)
+- [Enable bucket versioning](#enable-bucket-versioning)
+- [Create a VPC subnet](#create-a-vpc-subnet)
+- [Creating a volume](#creating-a-volume)
+- [Creating a security group](#creating-a-security-group)
+- [Creating a key-pair](#creating-a-key-pair)
+- [Updating security group egress rules](#updating-security-group-egress-rules)
+- [IAM policy and user access](#iam-policy-and-user-access)
+- [RDS resources](#rds-resources)
+- [Create an EC2 Instance with employee-app settings](#create-an-ec2-instance-with-employee-app-settings)
+- [Install stress for CloudWatch simulation](#install-stress-for-cloudwatch-simulation)
+- [Describe Auto Scaling instances](#describe-auto-scaling-instances)
+- [EBS volume formatting and mounting flow (simulated)](#ebs-volume-formatting-and-mounting-flow-simulated)
+
 **Create an EC2 Instance**
 ```bash
 aws ec2 run-instances \
@@ -268,4 +294,79 @@ Result:
         }
     ]
 }
+```
+
+**EBS volume formatting and mounting flow (simulated)**
+
+High-level overview:
+1. Identify the attached block device using lsblk to confirm the new EBS volume is visible.
+2. Create a filesystem on the volume with mkfs.ext4 so it is ready for Linux storage.
+3. Create a mount directory such as /mnt/logs to serve as the target location.
+4. Mount the formatted volume to the directory and verify the device is attached correctly.
+5. Edit /etc/fstab so the volume is automatically mounted after reboot.
+6. Unmount the volume temporarily, then reload the fstab entries with mount -a to confirm persistence.
+7. Check the final state to confirm the EBS volume is mounted and the system will restore it on startup.
+
+```sh
+ec2-user@ip-10-0-0-12 ~ $ lsblk
+NAME    MAJ:MIN RM  SIZE RO TYPE MOUNTPOINTS
+xvda     202:0    0   20G  0 disk
+├─xvda1  202:1    0  18G  0 part /
+├─xvda2  202:2    0   1G  0 part /boot
+└─xvda3  202:3    0   1G  0 part [SWAP]
+xvdb     202:16   0   5G  0 disk /mnt/app-data
+xvdc     202:32   0   5G  0 disk
+xvdd     202:48   0  10G  0 disk
+xvde     202:64   0   1G  0 disk
+xvdf     202:80   0   4G  0 disk
+
+ec2-user@ip-10-0-0-12 ~ $ sudo mkfs.ext4 /dev/xvdf
+mke2fs 1.46.5 (30-Dec-2021)
+
+Filesystem too small for a journal
+Discarding device blocks: done
+Creating filesystem with 1024 4k blocks and 1024 inodes
+
+Allocating group tables: done
+Writing inode tables: done
+Writing superblocks and filesystem accounting information: done
+
+ec2-user@ip-10-0-0-12 ~ $ sudo mkdir -p /mnt/logs
+
+ec2-user@ip-10-0-0-12 ~ $ sudo mount /dev/xvdf /mnt/logs
+
+ec2-user@ip-10-0-0-12 ~ $ lsblk
+NAME    MAJ:MIN RM  SIZE RO TYPE MOUNTPOINTS
+xvda     202:0    0   20G  0 disk
+├─xvda1  202:1    0  18G  0 part /
+├─xvda2  202:2    0   1G  0 part /boot
+└─xvda3  202:3    0   1G  0 part [SWAP]
+xvdb     202:16   0   5G  0 disk /mnt/app-data
+xvdc     202:32   0   5G  0 disk
+xvdd     202:48   0  10G  0 disk
+xvde     202:64   0   1G  0 disk
+xvdf     202:80   0   4G  0 disk /mnt/logs
+
+ec2-user@ip-10-0-0-12 ~ $ sudo vi /etc/fstab
+
+ec2-user@ip-10-0-0-12 ~ $ sudo umount /mnt/logs
+
+ec2-user@ip-10-0-0-12 ~ $ lsblk
+NAME    MAJ:MIN RM  SIZE RO TYPE MOUNTPOINTS
+xvda     202:0    0   20G  0 disk
+├─xvda1  202:1    0  18G  0 part /
+├─xvda2  202:2    0   1G  0 part /boot
+└─xvda3  202:3    0   1G  0 part [SWAP]
+xvdb     202:16   0   5G  0 disk /mnt/app-data
+xvdc     202:32   0   5G  0 disk
+xvdd     202:48   0  10G  0 disk
+xvde     202:64   0   1G  0 disk
+xvdf     202:80   0   4G  0 disk
+
+ec2-user@ip-10-0-0-12 ~ $ sudo mount -a
+
+ec2-user@ip-10-0-0-12 ~ $ sudo cat /etc/fstab
+LABEL=cloudimg-rootfs   /        ext4   discard,errors=remount-ro       0 1
+LABEL=UEFI      /boot/efi       vfat    umask=0077      0 1
+/dev/xvdf /mnt/logs ext4 rw 0 0
 ```
