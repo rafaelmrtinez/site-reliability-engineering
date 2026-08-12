@@ -242,3 +242,30 @@ sudo yum install stress -y
 ```bash
 stress --cpu 4 --io 4 --vm-bytes 1G --hdd 2
 ```
+
+**Describe Auto Scaling instances**
+```bash
+aws autoscaling describe-auto-scaling-instances
+```
+
+Result:
+```json
+{
+    "AutoScalingInstances": [
+        {
+            "InstanceId": "i-07a9f25e344826958",
+            "InstanceType": "t2.small",
+            "AutoScalingGroupName": "cloudwatchlab2",
+            "AvailabilityZone": "us-east-1a",
+            "LifecycleState": "InService",
+            "HealthStatus": "HEALTHY",
+            "LaunchTemplate": {
+                "LaunchTemplateId": "lt-0b760e89a1a43ad80",
+                "LaunchTemplateName": "cloudwatch_template",
+                "Version": "1"
+            },
+            "ProtectedFromScaleIn": false
+        }
+    ]
+}
+```
