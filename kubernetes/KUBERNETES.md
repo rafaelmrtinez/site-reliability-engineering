@@ -1,131 +1,183 @@
-Certified Kubernetes Application Developer: https://www.cncf.io/certification/ckad/
-Candidate Handbook: https://www.cncf.io/certification/candidate-handbook
-Exam Tips: https://docs.linuxfoundation.org/tc-docs/certification/tips-cka-and-ckad
+# Kubernetes Fundamentals and Core Objects
 
-Node - A machine which is a physical or virtual. Also called minions in the past.
-Cluster - Set of nodes grouped together.
-Master Node - Responsible for the orchestration of nodes and containers
-Api Server - Frontend for Kubernetes.
-Etcd - A distrubted key-value store to manage the cluster.
-Scheduler - Distributing work of contaienrs and assigns them to nodes. Reponsible for noticing and responding when containers goes down.
-Container Runtime - Underlying software that runs containers.
-Kubelet - Agent that runs in the nodes to manage containers.
+## Table of Contents
 
-Worker nodes requires container runtime. Master runs the 4 components (etcd, scheduler, controller, and api server).
+- [Overview](#overview)
+- [Containerd vs Docker](#containerd-vs-docker)
+- [Nerdctl](#nerdctl)
+- [Crictl](#crictl)
+- [Pods](#pods)
+- [kubectl Basics](#kubectl-basics)
+- [YAML Base Configuration in Kubernetes](#yaml-base-configuration-in-kubernetes)
+- [Replication Controller](#replication-controller)
+- [ReplicaSet](#replicaset)
+- [ReplicaController vs ReplicaSet](#replication-controller-vs-replicaset)
+- [Deployment (Modern Recommendation)](#deployment-modern-recommendation)
+- [Final Notes](#final-notes)
 
-Kubectl (Kube command line tool or Kube control) - Used to manage nodes/pods in a cluster.
+**Certified Kubernetes Application Developer**
+- https://www.cncf.io/certification/ckad/
+- https://www.cncf.io/certification/candidate-handbook
+- https://docs.linuxfoundation.org/tc-docs/certification/tips-cka-and-ckad
+
+## Overview
+Kubernetes is a container orchestration platform used to run, scale, and manage containerized applications. It helps automate deployment, self-healing, scaling, and service discovery.
+
+### Key terms
+- **Node**: A machine that runs workloads. It can be physical or virtual.
+- **Cluster**: A group of nodes working together.
+- **Master Node**: Handles orchestration and control-plane functions.
+- **API Server**: The front door for all Kubernetes communication.
+- **etcd**: A distributed key-value store that keeps cluster state.
+- **Scheduler**: Decides which node should run a workload.
+- **Container Runtime**: Software that runs containers such as containerd or CRI-O.
+- **Kubelet**: An agent running on each node that ensures containers are healthy.
+
+**Summary**: Nodes run workloads, while the control plane manages the cluster and keeps it healthy.
 
 ```bash
-# Examples:
-kubectl run hello-minkube
+# Basic kubectl checks
 kubectl cluster-info
-kubectl get nods
+kubectl get nodes
+kubectl get pods -A
 ```
+
+---
 
 ## Containerd vs Docker
-Docker - Container management tool which also contains docker engine as its runtime.
-Containerd - Runtime that is being used by Docker.
+**Quick explanation**: Docker is a developer-focused tool, but Kubernetes typically uses a lower-level container runtime such as containerd.
 
-Docker --> Docker Enginer --> Dockerd --> Containerd --> runc
+- **Docker**: A container platform that includes the Docker Engine.
+- **Containerd**: A lightweight runtime used to run containers efficiently.
+- **Docker flow**: Docker Engine -> dockerd -> containerd -> runc
 
-Contaienrd is part of Docker but also a separate runtime for containers. Ideally, you can install containerd without docker and still be able to run containers.
+**Why it matters**: In Kubernetes, containerd is commonly used behind the scenes instead of Docker as the direct runtime.
 
 ```bash
-Examples:
-ctr
-ctr images pull docker.io/<url>
+# Containerd examples
+ctr images ls
+ctr images pull docker.io/library/nginx:latest
 ```
+
+**Example flow**: A container image is pulled by the runtime, then the runtime starts the pod container on a selected node.
+
+---
 
 ## Nerdctl
-Used to have almost the same commands with docker cli.
+**Quick explanation**: Nerdctl is a tool that resembles Docker but is designed to work with containerd-compatible runtimes.
 
 ```bash
-# Examples:
-nerdctl
-nerdctl run --name <image_name>
+# Nerdctl examples
+nerdctl images ls
+nerdctl run --name myapp nginx
 ```
+
+**Summary**: Nerdctl provides a Docker-like experience for containerd-based systems, especially in environments where Docker is not the primary runtime.
+
+---
 
 ## Crictl
-Used to interact with the cri compatible runtime. Maintained by the kubernetes community. This however is not ideal to create containers. Only to be used for debugging purposes.
+**Quick explanation**: Crictl is used to inspect and debug containers through the CRI-compatible runtime. It is not the main tool for creating workloads.
 
 ```bash
-crictl
-crictl pull busybox
-crictl images
+# Crictl examples
 crictl ps -a
-crictl exec -it -t <container_id> <command_to_be_run>
+crictl images
 crictl logs <container_id>
-crictl pods
+crictl exec -it <container_id> /bin/sh
 ```
-## Docker deprecation
 
-- Containerd itself is sufficient to run containers so docker is no longer needed but NOT ENTIRELY GONE. Only for Kubernetes, docker is no longer used.
+**Summary**: Use crictl for troubleshooting and inspecting low-level runtime behavior.
+
+---
 
 ## Pods
-- Containers are encapsulter in a object called Pods.
-- Smalles object in Kubernetes.
-- Ideally only one container must run inside a single pod. 
-- Can be deployed in different nodes
-- Has one-to-one relationship with the container.
-- Do not add additional containers in a pod to scale.
+**Quick explanation**: A pod is the smallest unit in Kubernetes. It usually contains one container, but it can contain multiple containers when they are tightly related.
 
-#### Note: We can have multiple containers in a pod ONLY IF they are not the same applications.
+### Pod characteristics
+- Smallest object in Kubernetes
+- Usually one application per pod
+- Can run on different nodes
+- Has a one-to-one relationship with the main container
+- Multiple containers in one pod are only used for tightly related helper processes
 
-```yaml
-Example:
-- Pod
-  - Python App
-  - Dotnet Runtime (Helper container)
-```
-
-Helper containers only exist if another container requires dependency on it! That means, if the main container dies, the helper also dies.
-
-However, this type of architecture is only **rarely used**.
-
-## Commands
-``` bash
-kubectl run nginx --image nginx
-kubectl get pods
-```
-
-## YAML Base Configuration in Kubernetes
+**Note**: Helper containers are rare and only used when one container depends on another in the same pod.
 
 ```yaml
+# Pod example
 apiVersion: v1
-# Kind can be Pod, Service, ReplicaSet, or Deployment
-kind: Pod 
-# Metabdata is a data about the object
+kind: Pod
 metadata:
-    name: myapp-pod
-    labels:
-        app: myapp
-        type: frontend
-
-# Specification contents can differ across different services/configurations
+  name: myapp-pod
+  labels:
+    app: myapp
+    type: frontend
 spec:
-    containers:
-        - name: nginx-container
-          image: nginx
+  containers:
+    - name: myapp-container
+      image: nginx
 ```
-
-Once the configuration is created we can run the command.
 
 ```bash
-kubectl create -f <file_name>.yml
-
-# Get pods
+# Create and inspect the pod
+kubectl create -f pod.yaml
 kubectl get pods
-
-# Details about the pod
 kubectl describe pod myapp-pod
 ```
 
+**Summary**: Pods are the basic runtime unit; most workloads are then managed by higher-level objects such as ReplicaSet or Deployment.
+
+---
+
+## kubectl Basics
+**Quick explanation**: kubectl is the main command-line tool used to interact with a Kubernetes cluster.
+
+```bash
+# Basic commands
+kubectl run nginx --image=nginx
+kubectl get pods
+kubectl cluster-info
+```
+
+**Summary**: These commands help you create a workload, list running resources, and confirm cluster connectivity.
+
+---
+
+## YAML Base Configuration in Kubernetes
+**Quick explanation**: Kubernetes objects are commonly defined as YAML files. The YAML describes the object type, metadata, and the desired state of the workload.
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: myapp-pod
+  labels:
+    app: myapp
+    type: frontend
+spec:
+  containers:
+    - name: myapp-container
+      image: nginx
+```
+
+```bash
+# Create and inspect the pod from YAML
+kubectl create -f pod.yaml
+kubectl get pods
+kubectl describe pod myapp-pod
+```
+
+**Summary**: This example shows the same application pattern we will reuse in the ReplicaController, ReplicaSet, and Deployment examples.
+
+---
+
 ## Replication Controller
+**Quick explanation**: A ReplicationController ensures that a specific number of identical pod replicas are always running.
+
 - High availability
-- Creates multiple pod of the same instance
-- Can replace dead or unhealthy pods automatically
-- Can be used to share a load between them by re-routing traffic
-- Older technology that was replaced by ReplicaSet
+- Restarts failed pods automatically
+- Maintains a target number of replicas
+- Older object, mostly replaced by ReplicaSet and Deployment
 
 **Sample ReplicaController configuration**
 ```yaml
@@ -139,6 +191,7 @@ spec:
     metadata:
       labels:
         app: myapp
+        type: frontend
     spec:
       containers:
         - name: myapp-container
@@ -148,15 +201,16 @@ spec:
 ```
 
 ```bash
+# Create and inspect the controller
 kubectl create -f rc.yaml
 kubectl get rc
 kubectl get pods
 kubectl describe rc myapp-rc
 ```
 
-**Create, add, update, and delete ReplicaController**
+**Create, update, and delete**
 ```bash
-# Create a replica controller from a YAML file
+# Create a controller from a YAML file
 kubectl create -f rc.yaml
 
 # Apply or update the controller definition
@@ -169,16 +223,19 @@ kubectl scale rc myapp-rc --replicas=5
 kubectl delete rc myapp-rc
 ```
 
-#### Note: A ReplicationController ensures the cluster always maintains the desired number of pod replicas. It does not explicitly declare a selector in the manifest because the pod template labels are used for matching.
+**Summary**: The controller makes sure the cluster keeps the desired number of pod copies running even if some fail.
 
-#### Note: `kubectl scale` is commonly used to change the replica count, while `kubectl delete rc <name>` removes the controller and all the pods it manages.
+**Note**: A ReplicationController does not explicitly declare a selector in the manifest. Instead, it relies on the labels in the pod template to manage the matching pods.
+
+---
 
 ## ReplicaSet
-- Modern replacement for ReplicationController
-- Ensures a set number of identical pods are running
-- Requires a selector to identify which pods it manages
-- Uses label selectors and supports more flexible matching
-- Commonly used as a lower-level building block for Deployment
+**Quick explanation**: A ReplicaSet is the modern replacement for ReplicationController. It ensures that a specific number of matching pods are running and uses a selector to determine which pods belong to it.
+
+- More modern than ReplicationController
+- Maintains desired replicas
+- Uses selectors for matching pods
+- Common building block for Deployment
 
 **Sample ReplicaSet configuration**
 ```yaml
@@ -204,13 +261,14 @@ spec:
 ```
 
 ```bash
+# Create and inspect the ReplicaSet
 kubectl create -f rs.yaml
 kubectl get rs
 kubectl get pods
 kubectl describe rs myapp-rs
 ```
 
-**Create, scale, update, and delete ReplicaSet**
+**Create, scale, update, and delete**
 ```bash
 # Create a ReplicaSet from YAML
 kubectl create -f rs.yaml
@@ -221,7 +279,7 @@ kubectl apply -f rs.yaml
 # Scale to a specific replica count
 kubectl scale rs myapp-rs --replicas=5
 
-# Scale up from current value to a higher count
+# Scale up from the current value to a higher count
 kubectl scale rs myapp-rs --replicas=10
 
 # Scale down to a smaller count
@@ -234,39 +292,107 @@ kubectl apply -f rs.yaml
 kubectl delete rs myapp-rs
 ```
 
-#### Note: ReplicaSet must define a selector. This selector tells Kubernetes which pods belong to the ReplicaSet and must match the labels in the pod template.
+**Summary**: The selector is required in ReplicaSet because it tells Kubernetes which pods belong to this set and must be kept at the desired replica count.
 
-#### Note: You can scale a ReplicaSet either with the `kubectl scale` command or by modifying the `replicas` field in the YAML and applying it again.
+**Note**: The selector must match the labels in the template. In this example, both use `type: frontend`.
+
+---
 
 ## ReplicaController vs ReplicaSet
+**Quick explanation**: Both objects maintain a desired number of pod replicas, but ReplicaSet is newer and more flexible.
 
-**ReplicaController**
-- Older Kubernetes object
+### ReplicaController
+- Older object
+- Less flexible selector model
 - Does not explicitly declare a selector in the manifest
-- Relies on the template labels for pod matching
-- Replaced by ReplicaSet in modern workloads
-- Good for basic pod replication
+- Works well for simple replication scenarios
 
-**ReplicaSet**
-- Newer and preferred for pod replication
-- Must define a selector using `matchLabels` or a more advanced selector rule
-- Uses a more robust selector model
-- Acts as the underlying primitive for Deployments
-- More commonly used in modern Kubernetes environments
+### ReplicaSet
+- Modern object
+- Must define a selector
+- Supports `matchLabels` and more robust matching logic
+- Commonly used as the base for Deployment
 
 **Example comparison**
 ```bash
-# ReplicationController
+# ReplicationController example
 kubectl create -f rc.yaml
 kubectl scale rc myapp-rc --replicas=3
 kubectl delete rc myapp-rc
 
-# ReplicaSet
+# ReplicaSet example
 kubectl create -f rs.yaml
 kubectl scale rs myapp-rs --replicas=3
 kubectl delete rs myapp-rs
 ```
 
-#### Note: In modern Kubernetes, Deployment is usually preferred over both ReplicationController and ReplicaSet because it adds rolling updates and rollback support.
+**Summary**: ReplicaSet is preferred over ReplicationController because it is a newer and more capable object.
 
-#### Note: In real-world Kubernetes usage, Deployment is usually preferred over both ReplicationController and ReplicaSet because it adds rolling updates and rollback support.
+**Note**: In real Kubernetes usage, Deployment is usually preferred over both because it adds rolling updates and rollback support.
+
+---
+
+## Deployment (Modern Recommendation)
+**Quick explanation**: Deployment is the most common Kubernetes workload object used in production. It manages ReplicaSets behind the scenes and provides rolling updates, rollbacks, and easier version management.
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp-deploy
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: myapp
+  template:
+    metadata:
+      labels:
+        app: myapp
+    spec:
+      containers:
+        - name: myapp-container
+          image: nginx
+```
+
+```bash
+# Create and check deployment
+kubectl create -f deployment.yaml
+kubectl get deployment
+kubectl get rs
+kubectl get pods
+kubectl rollout status deployment/myapp-deploy
+```
+
+**Summary**: A Deployment creates a ReplicaSet for you, then manages updates and scaling in a smoother way than working with the lower-level objects directly.
+
+---
+
+## Final Notes
+**The lifecycle of a simple app**:
+1. Create a pod definition.
+2. Manage replicas with ReplicationController or ReplicaSet.
+3. Use Deployment to manage updates and rollout safely.
+4. Scale with `kubectl scale` or update YAML and apply it again.
+5. Inspect with `kubectl get`, `kubectl describe`, and `kubectl logs`.
+
+This structure keeps the same application example (`myapp`) throughout the notes, making it easier to understand how Kubernetes objects relate to each other.
+
+**Recommended order to study**:
+- Pods
+- ReplicationController
+- ReplicaSet
+- Deployment
+- kubectl troubleshooting commands
+
+**Example workflow**
+```bash
+kubectl create -f pod.yaml
+kubectl create -f rc.yaml
+kubectl create -f rs.yaml
+kubectl create -f deployment.yaml
+kubectl get pods
+kubectl describe deployment myapp-deploy
+```
+
+**Summary**: Kubernetes moves from basic pod creation to replicated workloads and finally to managed deployments for real-world application delivery.
