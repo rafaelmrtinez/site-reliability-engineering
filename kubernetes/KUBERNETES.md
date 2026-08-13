@@ -20,6 +20,7 @@
     - [ReplicaSet](#replicaset-1)
   - [Rolling Updates](#rolling-updates)
   - [Deployment (Modern Recommendation)](#deployment-modern-recommendation)
+  - [Namespaces](#namespaces)
   - [Final Notes](#final-notes)
 
 **Certified Kubernetes Application Developer**
@@ -470,6 +471,249 @@ kubectl delete deployment myapp-deploy
 **Important clarification**: Deployment and ReplicaSet do not have major differences in how they manage replica pods. A Deployment is essentially a higher-level controller that manages a ReplicaSet for you. The main difference is the **kind** and the additional features Deployment adds, such as rolling updates, revisions, and rollback support.
 
 **Note**: Deployment is the preferred object for most real-world Kubernetes workloads because it simplifies updates and reduces downtime. The `RollingUpdate` strategy ensures that pods are replaced gradually instead of all at once.
+
+---
+
+## Namespaces
+**Quick explanation**: A namespace is a logical partition inside a Kubernetes cluster. It is used to organize resources, isolate workloads, and divide a cluster into smaller, safer environments such as development, staging, and production.
+
+**Definition**: A namespace is a virtual boundary that groups related Kubernetes resources, such as Pods, Services, Deployments, and ConfigMaps.
+
+**Real-world analogy**: A Kubernetes cluster is like a large office building. Each department can have its own floor, room, or section. Namespaces are like those departments: they keep different teams and workloads separated so they do not collide with each other.
+
+**Example analogy**:
+- **Development team**: lives in the `dev` namespace
+- **Production team**: lives in the `prod` namespace
+- **Shared tools**: may live in the `kube-system` namespace
+
+**Default namespace**:
+- Kubernetes has a default namespace called `default`.
+- It is used when no namespace is explicitly specified.
+- Any resource created without a namespace goes into `default`.
+
+```bash
+kubectl get namespaces
+kubectl get pods
+kubectl get pods -n default
+```
+
+**Namespace isolation**:
+- Resources in one namespace are isolated from resources in another namespace.
+- Names can repeat across namespaces, but not within the same namespace.
+- This allows teams to reuse names without conflicts.
+
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dev
+```
+
+```bash
+# Create a namespace using YAML
+kubectl apply -f namespace-dev.yaml
+
+# Create a namespace directly from command line
+kubectl create namespace dev
+
+# Create a namespace with a custom YAML file
+kubectl create -f namespace-dev.yaml
+```
+
+**All possible ways to create a new namespace**:
+```bash
+# 1. Create from YAML
+kubectl apply -f namespace-dev.yaml
+
+# 2. Create directly with CLI
+kubectl create namespace dev
+
+# 3. Create with a YAML resource definition
+cat <<EOF > namespace-dev.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dev
+EOF
+kubectl apply -f namespace-dev.yaml
+
+# 4. Create from a file generated in the current directory
+kubectl create -f namespace-dev.yaml
+```
+
+**How to add a namespace in a YAML manifest**:
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: prod
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp
+  namespace: prod
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: myapp
+  template:
+    metadata:
+      labels:
+        app: myapp
+    spec:
+      containers:
+        - name: myapp-container
+          image: nginx
+```
+
+**How to use the `--namespace` flag**:
+```bash
+kubectl get pods --namespace=dev
+kubectl get services --namespace=prod
+kubectl logs myapp-pod --namespace=dev
+kubectl delete pod myapp-pod --namespace=dev
+```
+
+**Set the namespace for the current context**:
+```bash
+kubectl config set-context --current --namespace=dev
+kubectl get pods
+```
+
+**Set the namespace explicitly using a variable**:
+```bash
+kubectl config set-context --current --namespace=${NAMESPACE}
+```
+
+**Alternative pattern**:
+```bash
+kubectl config set-context --current --namespace=my-team
+kubectl get pods
+kubectl get svc
+```
+
+**How to view the active namespace**:
+```bash
+kubectl config view --minify | grep namespace
+kubectl config get-contexts
+```
+
+**Use all namespaces**:
+```bash
+kubectl get pods --all-namespaces
+kubectl get svc --all-namespaces
+kubectl get all -A
+```
+
+**Namespace DNS and service resolution**:
+Kubernetes provides automatic DNS names for Services. Pods can resolve Services using a DNS name instead of direct IP addresses.
+
+**Service DNS format**:
+- `<service-name>`
+- `<service-name>.<namespace>`
+- `<service-name>.<namespace>.svc.cluster.local`
+
+**Example**:
+```bash
+kubectl get svc -A
+```
+
+If you have a Service named `frontend` in the `dev` namespace, then the DNS names would be:
+- `frontend`
+- `frontend.dev`
+- `frontend.dev.svc.cluster.local`
+
+**How it works**:
+- Each namespace gets its own DNS domain.
+- Pods can resolve the Service name using the namespace scope.
+- A pod in the same namespace can usually just call `frontend`.
+- A pod in a different namespace must use `frontend.dev` or the full FQDN.
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: dev
+spec:
+  selector:
+    app: frontend
+  ports:
+    - port: 80
+      targetPort: 80
+```
+
+```bash
+# Inside a pod in the same namespace
+curl http://frontend
+
+# From another namespace
+curl http://frontend.dev
+```
+
+**Automatically created DNS format**:
+Every Service gets a DNS entry in this format:
+- `<service-name>.<namespace>.svc.cluster.local`
+
+Breakdown:
+- `service-name`: name of the Kubernetes Service
+- `namespace`: namespace where the Service lives
+- `svc`: indicates it is a Kubernetes Service DNS record
+- `cluster.local`: default cluster domain
+
+Example:
+- `frontend.dev.svc.cluster.local`
+
+This format is the fully qualified domain name (FQDN) used internally by the cluster.
+
+**Namespace resource quota**:
+A ResourceQuota limits how many resources a namespace can consume, helping prevent one team from exhausting cluster capacity.
+
+```yaml
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: dev-quota
+  namespace: dev
+spec:
+  hard:
+    pods: "10"
+    requests.cpu: "4"
+    requests.memory: 8Gi
+    limits.cpu: "8"
+    limits.memory: 16Gi
+```
+
+```bash
+kubectl apply -f resourcequota-dev.yaml
+kubectl get resourcequota -n dev
+kubectl describe quota -n dev
+```
+
+**Summary**: Namespaces provide structure, isolation, and resource governance inside a cluster. They are essential for separating dev, test, and production environments and for managing DNS and quotas effectively.
+
+**Note**: The `default` namespace is the fallback namespace. If you do not specify a namespace, Kubernetes places the resource there unless the context is configured differently.
+
+**Example full workflow**:
+```bash
+# 1. Create a namespace
+kubectl create namespace dev
+
+# 2. Set current context to dev
+kubectl config set-context --current --namespace=dev
+
+# 3. Create a deployment in that namespace
+kubectl create deployment myapp --image=nginx
+
+# 4. Check resources in the namespace
+kubectl get pods
+kubectl get svc
+
+# 5. Check all namespaces
+kubectl get all -A
+```
 
 ---
 
