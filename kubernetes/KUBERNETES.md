@@ -396,15 +396,32 @@ kubectl rollout undo deployment/myapp-deploy
 ---
 
 ## Deployment (Modern Recommendation)
-**Quick explanation**: Deployment is the most common Kubernetes workload object used in production. It manages ReplicaSets behind the scenes and provides rolling updates, rollbacks, and easier version management.
+**Quick explanation**: A Deployment is the recommended Kubernetes workload object for running applications in production. It manages ReplicaSets behind the scenes and provides rolling updates, scaling, and rollback support.
 
+**Definition**: A Deployment tells Kubernetes how to create and maintain the desired number of pod replicas for an application.
+
+**Configuration fields**:
+- **metadata**: Name and labels of the Deployment
+- **replicas**: Number of desired pod instances
+- **selector**: Matches the labels used by the pod template
+- **template**: Defines the pod specification and container image
+- **strategy**: Controls how updates happen, usually with rolling updates
+
+**Example deployment configuration**
 ```yaml
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: myapp-deploy
+  labels:
+    app: myapp
 spec:
   replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
   selector:
     matchLabels:
       app: myapp
@@ -415,19 +432,44 @@ spec:
     spec:
       containers:
         - name: myapp-container
-          image: nginx
+          image: nginx:latest
+          ports:
+            - containerPort: 80
 ```
 
 ```bash
-# Create and check deployment
-kubectl create -f deployment.yaml
+# Create the deployment
+kubectl apply -f deployment.yaml
+
+# Check deployment and pods
 kubectl get deployment
 kubectl get rs
 kubectl get pods
+
+# Wait until the rollout is complete
 kubectl rollout status deployment/myapp-deploy
+
+# Scale the deployment
+kubectl scale deployment myapp-deploy --replicas=5
+
+# Update the image version
+kubectl set image deployment/myapp-deploy myapp-container=nginx:1.25
+
+# Check rollout history
+kubectl rollout history deployment/myapp-deploy
+
+# Roll back to the previous version if needed
+kubectl rollout undo deployment/myapp-deploy
+
+# Delete the deployment
+kubectl delete deployment myapp-deploy
 ```
 
-**Summary**: A Deployment creates a ReplicaSet for you, then manages updates and scaling in a smoother way than working with the lower-level objects directly.
+**Summary**: A Deployment creates and manages ReplicaSets for you, then keeps the application available while it updates, scales, and rolls back safely.
+
+**Important clarification**: Deployment and ReplicaSet do not have major differences in how they manage replica pods. A Deployment is essentially a higher-level controller that manages a ReplicaSet for you. The main difference is the **kind** and the additional features Deployment adds, such as rolling updates, revisions, and rollback support.
+
+**Note**: Deployment is the preferred object for most real-world Kubernetes workloads because it simplifies updates and reduces downtime. The `RollingUpdate` strategy ensures that pods are replaced gradually instead of all at once.
 
 ---
 
