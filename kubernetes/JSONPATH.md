@@ -451,4 +451,40 @@ This would return:
 nginx
 ```
 
+### Wildcard when using criteria or filtering
+The `*` wildcard is used to match all items in a list when you want to select everything, or when you want to filter a collection by a condition.
+
+Example JSON:
+```json
+{
+  "items": [
+    { "name": "api", "status": "Running" },
+    { "name": "web", "status": "Pending" },
+    { "name": "worker", "status": "Running" }
+  ]
+}
+```
+
+Select all item names:
+```text
+$.items[*].name
+```
+
+This returns:
+```text
+api web worker
+```
+
+Filter only the running items:
+```text
+$.items[?(@.status=="Running")].name
+```
+
+This returns:
+```text
+api worker
+```
+
+The `*` helps you select all values in a collection, while the filter `?()` narrows the result based on a condition.
+
 JSONPath is useful when working with structured data, although Kubernetes usually uses YAML manifests instead of raw JSON for most configuration files.
