@@ -124,6 +124,13 @@ kubectl get pods -o custom-columns=NAME:.metadata.name,STATUS:.status.phase
 
 #### Note: The `-o` option is useful when you want data in a compact or machine-readable format.
 
+**Export a pod definition to YAML**
+```bash
+kubectl get pod nginx -o yaml > pod-definition.yaml
+```
+
+#### Note: This command saves the current live pod configuration to a YAML file, which is useful for backup, review, or creating a template for future deployments.
+
 **Basic troubleshooting workflow**
 ```bash
 kubectl get pods
