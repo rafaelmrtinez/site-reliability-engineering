@@ -2,18 +2,25 @@
 
 ## Table of Contents
 
-- [Overview](#overview)
-- [Containerd vs Docker](#containerd-vs-docker)
-- [Nerdctl](#nerdctl)
-- [Crictl](#crictl)
-- [Pods](#pods)
-- [kubectl Basics](#kubectl-basics)
-- [YAML Base Configuration in Kubernetes](#yaml-base-configuration-in-kubernetes)
-- [Replication Controller](#replication-controller)
-- [ReplicaSet](#replicaset)
-- [ReplicaController vs ReplicaSet](#replication-controller-vs-replicaset)
-- [Deployment (Modern Recommendation)](#deployment-modern-recommendation)
-- [Final Notes](#final-notes)
+- [Kubernetes Fundamentals and Core Objects](#kubernetes-fundamentals-and-core-objects)
+  - [Table of Contents](#table-of-contents)
+  - [Overview](#overview)
+    - [Key terms](#key-terms)
+  - [Containerd vs Docker](#containerd-vs-docker)
+  - [Nerdctl](#nerdctl)
+  - [Crictl](#crictl)
+  - [Pods](#pods)
+    - [Pod characteristics](#pod-characteristics)
+  - [kubectl Basics](#kubectl-basics)
+  - [YAML Base Configuration in Kubernetes](#yaml-base-configuration-in-kubernetes)
+  - [Replication Controller](#replication-controller)
+  - [ReplicaSet](#replicaset)
+  - [ReplicaController vs ReplicaSet](#replicacontroller-vs-replicaset)
+    - [ReplicaController](#replicacontroller)
+    - [ReplicaSet](#replicaset-1)
+  - [Rolling Updates](#rolling-updates)
+  - [Deployment (Modern Recommendation)](#deployment-modern-recommendation)
+  - [Final Notes](#final-notes)
 
 **Certified Kubernetes Application Developer**
 - https://www.cncf.io/certification/ckad/
@@ -329,6 +336,62 @@ kubectl delete rs myapp-rs
 **Summary**: ReplicaSet is preferred over ReplicationController because it is a newer and more capable object.
 
 **Note**: In real Kubernetes usage, Deployment is usually preferred over both because it adds rolling updates and rollback support.
+
+---
+
+## Rolling Updates
+**Quick explanation**: Updating application code, image versions, or configuration changes can temporarily affect users if pods are replaced all at once. Rolling updates solve this by changing pods gradually, keeping the service available during the update.
+
+- Keeps the application available while new versions are deployed
+- Replaces older pods gradually instead of all at once
+- Reduces downtime and user impact
+- Usually managed by a Deployment
+
+**Why this matters**: If a service is live and you update the container image or configuration, a sudden restart of every pod could interrupt user traffic. Rolling updates reduce this risk by creating new pods first, validating them, and then removing old ones.
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp-deploy
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: myapp
+  template:
+    metadata:
+      labels:
+        app: myapp
+    spec:
+      containers:
+        - name: myapp-container
+          image: nginx:1.23
+```
+
+```bash
+# Create the deployment
+kubectl apply -f deployment.yaml
+
+# Check rollout status
+kubectl rollout status deployment/myapp-deploy
+
+# Update the image to a newer version
+kubectl set image deployment/myapp-deploy myapp-container=nginx:1.25
+
+# Watch the rollout progress
+kubectl rollout history deployment/myapp-deploy
+kubectl rollout undo deployment/myapp-deploy
+```
+
+**Summary**: Rolling updates allow you to change application versions safely without taking the service fully offline. This is especially important for production workloads where user experience matters.
+
+**Note**: A bad update can be rolled back with `kubectl rollout undo`, which helps recover quickly if a new version introduces issues.
 
 ---
 
