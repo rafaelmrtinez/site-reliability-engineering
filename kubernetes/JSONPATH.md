@@ -1,5 +1,32 @@
 # JSONPATH Documentation
 
+## Table of Contents
+
+- [JSONPATH Documentation](#jsonpath-documentation)
+  - [Table of Contents](#table-of-contents)
+  - [YAML](#yaml)
+    - [What is YAML?](#what-is-yaml)
+    - [Why YAML is important](#why-yaml-is-important)
+    - [YAML vs JSON vs XML](#yaml-vs-json-vs-xml)
+      - [YAML](#yaml-1)
+      - [JSON](#json)
+      - [XML](#xml)
+    - [Key differences](#key-differences)
+    - [Use case in Kubernetes](#use-case-in-kubernetes)
+    - [Why YAML is preferred in Kubernetes](#why-yaml-is-preferred-in-kubernetes)
+    - [YAML fundamentals: key-value pairs, list, and dictionary](#yaml-fundamentals-key-value-pairs-list-and-dictionary)
+      - [1. Key-value pairs](#1-key-value-pairs)
+      - [2. Dictionary](#2-dictionary)
+      - [3. List](#3-list)
+    - [Advanced YAML: combining key-value pairs, dictionaries, and lists](#advanced-yaml-combining-key-value-pairs-dictionaries-and-lists)
+      - [Difficulty: Basic](#difficulty-basic)
+      - [Difficulty: Intermediate](#difficulty-intermediate)
+      - [Difficulty: Advanced](#difficulty-advanced)
+    - [Practical note: why this matters in Kubernetes](#practical-note-why-this-matters-in-kubernetes)
+    - [Summary](#summary)
+  - [JSONPath](#jsonpath)
+    - [Wildcard when using criteria or filtering](#wildcard-when-using-criteria-or-filtering)
+
 ## YAML
 
 ### What is YAML?
