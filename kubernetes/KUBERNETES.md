@@ -12,6 +12,7 @@
   - [Pods](#pods)
     - [Pod characteristics](#pod-characteristics)
   - [kubectl Basics](#kubectl-basics)
+  - [Commands and Arguments](#commands-and-arguments)
   - [YAML Base Configuration in Kubernetes](#yaml-base-configuration-in-kubernetes)
   - [Replication Controller](#replication-controller)
   - [ReplicaSet](#replicaset)
@@ -154,6 +155,78 @@ kubectl cluster-info
 ```
 
 **Summary**: These commands help you create a workload, list running resources, and confirm cluster connectivity.
+
+---
+
+## Commands and Arguments
+**Quick explanation**: In Kubernetes, the `command` and `args` fields inside a container definition control how the container starts. They are the Kubernetes equivalent of how a Docker image defines its startup behavior.
+
+**Important relationship to Docker**:
+- `command` in Kubernetes maps most closely to Docker `ENTRYPOINT`
+- `args` in Kubernetes maps most closely to Docker `CMD`
+- If you pass extra arguments at runtime, Docker treats them as arguments to the `ENTRYPOINT`
+
+**Pod YAML definition with container commands and arguments**:
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: command-demo
+spec:
+  containers:
+    - name: app
+      image: busybox
+      command: ["/bin/sh", "-c"]
+      args: ["echo Hello from Kubernetes; sleep 3600"]
+```
+
+**What this means**:
+- The container starts with `/bin/sh -c`
+- The command receives the string `echo Hello from Kubernetes; sleep 3600`
+- This is effectively the same idea as a Docker image starting with a shell and then running a command
+
+**Docker analogy**:
+```dockerfile
+FROM busybox
+ENTRYPOINT ["/bin/sh", "-c"]
+CMD ["echo Hello from Docker; sleep 3600"]
+```
+
+In this Docker image:
+- `ENTRYPOINT` sets the main executable that always runs
+- `CMD` sets the default argument(s) passed to that executable
+
+**Kubernetes to Docker mapping**:
+- `command: ["/bin/sh", "-c"]` → Docker `ENTRYPOINT ["/bin/sh", "-c"]`
+- `args: ["echo Hello from Kubernetes; sleep 3600"]` → Docker `CMD ["echo Hello from Kubernetes; sleep 3600"]`
+
+**Override behavior**:
+- `command` replaces the container's default startup command
+- `args` replaces the default command arguments
+- This lets you override what a Docker image does without rebuilding the image
+
+**Example override**:
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: override-demo
+spec:
+  containers:
+    - name: app
+      image: nginx
+      command: ["nginx"]
+      args: ["-g", "daemon off;"]
+```
+
+This starts NGINX explicitly, passing the runtime flags it needs.
+
+**Key takeaway**:
+- Kubernetes `command` is the startup executable you want to run.
+- Kubernetes `args` is the parameter list given to that executable.
+- In Docker terms, `command` aligns with `ENTRYPOINT`, and `args` aligns with `CMD`.
+
+**Summary**: Understanding `command` and `args` is essential because Kubernetes does not just run a container image blindly. It can override the image's default startup behavior in a way that mirrors how Docker configures `ENTRYPOINT` and `CMD`.
 
 ---
 
