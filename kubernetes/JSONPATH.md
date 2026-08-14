@@ -25,6 +25,14 @@
     - [Practical note: why this matters in Kubernetes](#practical-note-why-this-matters-in-kubernetes)
     - [Summary](#summary)
   - [JSONPath](#jsonpath)
+    - [How to use JSONPath with Kubernetes](#how-to-use-jsonpath-with-kubernetes)
+    - [1. Identify the kubectl command](#1-identify-the-kubectl-command)
+    - [2. Familiarize the JSON output](#2-familiarize-the-json-output)
+    - [3. Form the JSONPath query](#3-form-the-jsonpath-query)
+    - [4. Use the JSON PATH query with kubectl command](#4-use-the-json-path-query-with-kubectl-command)
+    - [JSONPath example with Kubernetes](#jsonpath-example-with-kubernetes)
+    - [Loops in kubectl JSONPath](#loops-in-kubectl-jsonpath)
+    - [Custom columns](#custom-columns)
     - [Wildcard when using criteria or filtering](#wildcard-when-using-criteria-or-filtering)
 
 ## YAML
@@ -455,28 +463,181 @@ When combined, they create complex but readable configuration structures such as
 ## JSONPath
 JSONPath is a way to query values inside JSON-like data structures. It helps locate specific fields or nested values in a document.
 
-Example:
+### How to use JSONPath with Kubernetes
+When working with Kubernetes, the key idea is simple:
+
+1. Identify the `kubectl` command you need.
+2. Request JSON output using `-o json` so the result is structured and queryable.
+3. Familiarize yourself with the JSON object returned by Kubernetes.
+4. Form the JSONPath expression that matches the field you want.
+5. Use the JSONPath query in the `kubectl` command.
+
+This workflow is especially useful when you want to extract only the fields you need without printing the entire YAML manifest.
+
+### 1. Identify the kubectl command
+Before writing a JSONPath query, decide which resource you want to inspect.
+
+Examples:
+```bash
+kubectl get pods
+kubectl get deployments
+kubectl get services
+kubectl get nodes
+```
+
+If you need structured data for JSONPath, add `-o json`.
+
+### 2. Familiarize the JSON output
+Kubernetes returns a JSON object where resources are typically nested under `items` for lists, and each object contains metadata, spec, and status.
+
+Example `kubectl get pods -o json` output:
 ```json
 {
-  "name": "myapp",
-  "replicas": 3,
-  "spec": {
-    "containers": [
-      { "name": "app", "image": "nginx" }
-    ]
-  }
+  "apiVersion": "v1",
+  "items": [
+    {
+      "metadata": {
+        "name": "api-pod",
+        "namespace": "default",
+        "labels": {
+          "app": "api"
+        }
+      },
+      "status": {
+        "phase": "Running"
+      },
+      "spec": {
+        "containers": [
+          {
+            "name": "api-container",
+            "image": "nginx:latest"
+          }
+        ]
+      }
+    }
+  ],
+  "kind": "List"
 }
 ```
 
-A JSONPath expression might look like:
+This is the output you need before building a JSONPath expression.
+
+### 3. Form the JSONPath query
+Once you understand the JSON structure, you can create a JSONPath expression.
+
+Examples:
 ```text
-$.spec.containers[0].image
+$.items[*].metadata.name
+```
+This returns all pod names.
+
+```text
+$.items[*].status.phase
+```
+This returns each pod status.
+
+```text
+$.items[*].spec.containers[*].image
+```
+This returns all container images.
+
+For nested values, JSONPath follows the same structure as the JSON object.
+
+### 4. Use the JSON PATH query with kubectl command
+Use `kubectl get ... -o jsonpath='...'` with the JSONPath expression.
+
+Example: list pod names.
+```bash
+kubectl get pods -o jsonpath='{.items[*].metadata.name}'
 ```
 
-This would return:
+Example output:
 ```text
-nginx
+api-pod web-pod worker-pod
 ```
+
+Example: list pod names one per line.
+```bash
+kubectl get pods -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'
+```
+
+Example output:
+```text
+api-pod
+web-pod
+worker-pod
+```
+
+This is a typical pattern when you want a cleaner, machine-friendly output.
+
+### JSONPath example with Kubernetes
+Example JSON object:
+```json
+{
+  "items": [
+    { "name": "api", "status": "Running" },
+    { "name": "web", "status": "Pending" },
+    { "name": "worker", "status": "Running" }
+  ]
+}
+```
+
+Select all names:
+```text
+$.items[*].name
+```
+
+This returns:
+```text
+api web worker
+```
+
+Filter only the running items:
+```text
+$.items[?(@.status=="Running")].name
+```
+
+This returns:
+```text
+api worker
+```
+
+### Loops in kubectl JSONPath
+Loops let you iterate through a list and print multiple fields in a single line or one per line.
+
+Example: print each pod name and phase.
+```bash
+kubectl get pods -o jsonpath='{range .items[*]}{.metadata.name}{" - "}{.status.phase}{"\n"}{end}'
+```
+
+Example output:
+```text
+api-pod - Running
+web-pod - Pending
+worker-pod - Running
+```
+
+Example: print namespace and pod name.
+```bash
+kubectl get pods -o jsonpath='{range .items[*]}{.metadata.namespace}{" "}{.metadata.name}{"\n"}{end}'
+```
+
+### Custom columns
+Instead of JSONPath, Kubernetes also supports custom columns for a more readable table.
+
+Example:
+```bash
+kubectl get pods -o custom-columns=NAME:.metadata.name,STATUS:.status.phase,NAMESPACE:.metadata.namespace
+```
+
+Example output:
+```text
+NAME       STATUS    NAMESPACE
+a pi-pod   Running   default
+web-pod   Pending   default
+```
+
+A custom-columns command is often easier to read than JSONPath when you want a table, but JSONPath is more powerful when you need to extract precise nested values.
 
 ### Wildcard when using criteria or filtering
 The `*` wildcard is used to match all items in a list when you want to select everything, or when you want to filter a collection by a condition.
@@ -514,4 +675,4 @@ api worker
 
 The `*` helps you select all values in a collection, while the filter `?()` narrows the result based on a condition.
 
-JSONPath is useful when working with structured data, although Kubernetes usually uses YAML manifests instead of raw JSON for most configuration files.
+JSONPath is useful when working with structured data, especially when Kubernetes output is formatted as JSON. In practice, you usually pair it with `kubectl get ... -o json` or `kubectl get ... -o jsonpath='...'` to extract exactly the information you need.
