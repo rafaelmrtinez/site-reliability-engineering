@@ -44,6 +44,14 @@
   - [Rolling Updates](#rolling-updates)
   - [Deployment (Modern Recommendation)](#deployment-modern-recommendation)
   - [Namespaces](#namespaces)
+  - [Taints and Tolerations](#taints-and-tolerations)
+    - [What are taints and tolerations?](#what-are-taints-and-tolerations)
+    - [Node and Pod relationship](#node-and-pod-relationship)
+    - [Commands to taint a node](#commands-to-taint-a-node)
+    - [Types of taint effects](#types-of-taint-effects)
+    - [Tolerations in declarative Pod config (and quoting)](#tolerations-in-declarative-pod-config-and-quoting)
+    - [What does `kubectl describe node kubemaster` do?](#what-does-kubectl-describe-node-kubemaster-do)
+    - [Does the master/control-plane node schedule normal pods?](#does-the-mastercontrol-plane-node-schedule-normal-pods)
   - [Encrypting Secret Data at Rest](#encrypting-secret-data-at-rest)
     - [How encryption works in Kubernetes](#how-encryption-works-in-kubernetes)
     - [What is etcdctl?](#what-is-etcdctl)
@@ -1403,6 +1411,146 @@ kubectl get svc
 # 5. Check all namespaces
 kubectl get all -A
 ```
+
+---
+
+## Taints and Tolerations
+**Quick explanation**: Taints are applied to nodes to repel pods, while tolerations are added to pods to allow them to be scheduled onto tainted nodes.
+
+### What are taints and tolerations?
+A **taint** is a rule on a node that says, "do not place pods here unless they explicitly tolerate this condition."
+
+A **toleration** is a rule on a pod that says, "this pod can run on nodes with a matching taint."
+
+Important behavior:
+- taints do not force scheduling by themselves
+- tolerations only allow scheduling; they do not guarantee a pod will land on that node
+- to target a specific node pool, combine tolerations with labels and node selectors/affinity
+
+---
+
+### Node and Pod relationship
+The scheduler decides where a pod runs by checking:
+- resource availability
+- node selectors/affinity rules
+- taints on nodes and tolerations on pods
+
+Relationship summary:
+- nodes advertise constraints (including taints)
+- pods declare what they can tolerate
+- a pod without matching tolerations is blocked from tainted nodes
+
+---
+
+### Commands to taint a node
+Apply a taint:
+```bash
+kubectl taint nodes <node-name> dedicated=infra:NoSchedule
+```
+
+Check node taints:
+```bash
+kubectl describe node <node-name>
+kubectl get nodes -o custom-columns=NAME:.metadata.name,TAINTS:.spec.taints
+```
+
+Remove a taint (note the trailing `-`):
+```bash
+kubectl taint nodes <node-name> dedicated=infra:NoSchedule-
+```
+
+Control-plane taint examples (name varies by distro/version):
+```bash
+kubectl taint nodes <control-plane-node> node-role.kubernetes.io/control-plane=:NoSchedule
+kubectl taint nodes <control-plane-node> node-role.kubernetes.io/master=:NoSchedule
+```
+
+---
+
+### Types of taint effects
+Kubernetes supports three taint effects:
+
+1. `NoSchedule`
+- Pods without a matching toleration will not be scheduled onto the node.
+
+2. `PreferNoSchedule`
+- Soft rule. Scheduler tries to avoid placing non-tolerating pods there, but may still place them if needed.
+
+3. `NoExecute`
+- New non-tolerating pods are not scheduled.
+- Existing non-tolerating pods are evicted from the node.
+
+---
+
+### Tolerations in declarative Pod config (and quoting)
+Pod example with tolerations:
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: toleration-demo
+spec:
+  tolerations:
+    - key: "dedicated"
+      operator: "Equal"
+      value: "infra"
+      effect: "NoSchedule"
+  containers:
+    - name: app
+      image: nginx
+```
+
+Do values need double quotes?
+- Not strictly required for simple strings in YAML.
+- Recommended for consistency and to avoid parsing surprises.
+- Especially useful when values may look like booleans, numbers, dates, or include special characters.
+
+Equivalent unquoted example (valid YAML):
+```yaml
+tolerations:
+  - key: dedicated
+    operator: Equal
+    value: infra
+    effect: NoSchedule
+```
+
+---
+
+### What does `kubectl describe node kubemaster` do?
+This command shows detailed information about the node named `kubemaster`.
+
+It includes:
+- node labels and annotations
+- taints
+- capacity and allocatable CPU/memory
+- conditions (Ready, MemoryPressure, DiskPressure, etc.)
+- running pods and resource usage summary
+- recent node-related events
+
+It is commonly used to troubleshoot scheduling issues and verify whether taints are preventing pod placement.
+
+---
+
+### Does the master/control-plane node schedule normal pods?
+By default in many kubeadm-style clusters, control-plane nodes are tainted with `NoSchedule` for general workloads.
+
+What this means:
+- normal application pods usually do not run there
+- control-plane/system components still run there
+- if you add a matching toleration (or remove the taint), regular pods can be scheduled there
+
+Check current taints on control-plane nodes:
+```bash
+kubectl get nodes -o custom-columns=NAME:.metadata.name,TAINTS:.spec.taints
+```
+
+In single-node labs, people sometimes remove the control-plane taint to allow workloads:
+```bash
+kubectl taint nodes <control-plane-node> node-role.kubernetes.io/control-plane:NoSchedule-
+kubectl taint nodes <control-plane-node> node-role.kubernetes.io/master:NoSchedule-
+```
+
+Use this carefully in production environments.
 
 ---
 
