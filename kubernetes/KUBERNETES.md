@@ -44,6 +44,17 @@
   - [Rolling Updates](#rolling-updates)
   - [Deployment (Modern Recommendation)](#deployment-modern-recommendation)
   - [Namespaces](#namespaces)
+  - [Node Selectors Logging](#node-selectors-logging)
+    - [What is node selector?](#what-is-node-selector)
+    - [Node selector in declarative configuration](#node-selector-in-declarative-configuration)
+    - [What are labels?](#what-are-labels)
+    - [How to label a node](#how-to-label-a-node)
+  - [Node Affinity](#node-affinity)
+    - [What is Node Affinity?](#what-is-node-affinity)
+    - [What is the limitation of node selectors?](#what-is-the-limitation-of-node-selectors)
+    - [Node affinity types](#node-affinity-types)
+    - [Syntax explanation (Affinity only)](#syntax-explanation-affinity-only)
+    - [Examples of Node Affinity in declarative Pod configuration](#examples-of-node-affinity-in-declarative-pod-configuration)
   - [Taints and Tolerations](#taints-and-tolerations)
     - [What are taints and tolerations?](#what-are-taints-and-tolerations)
     - [Node and Pod relationship](#node-and-pod-relationship)
@@ -1410,6 +1421,254 @@ kubectl get svc
 
 # 5. Check all namespaces
 kubectl get all -A
+```
+
+---
+
+## Node Selectors Logging
+**Quick explanation**: A node selector is the simplest way to constrain a pod so it runs only on nodes with a specific label.
+
+### What is node selector?
+A `nodeSelector` is a key-value match in a Pod spec.
+
+How it works:
+- You label a node, for example `disk=ssd`.
+- You add `nodeSelector: { disk: ssd }` to the pod.
+- The scheduler places the pod only on nodes that have that exact label.
+
+If no node matches, the pod remains `Pending`.
+
+---
+
+### Node selector in declarative configuration
+Example pod snippet:
+```yaml
+spec:
+  nodeSelector:
+    disktype: ssd
+```
+
+Minimal full example:
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: selector-demo
+spec:
+  nodeSelector:
+    disktype: ssd
+  containers:
+    - name: app
+      image: nginx
+```
+
+---
+
+### What are labels?
+Labels are key-value metadata attached to Kubernetes objects such as nodes, pods, and namespaces.
+
+Examples:
+- `disktype=ssd`
+- `zone=us-east-1a`
+- `environment=prod`
+
+Why labels matter:
+- selection and grouping of resources
+- scheduling decisions (nodeSelector / affinity)
+- operational filtering with `kubectl`
+
+---
+
+### How to label a node
+Add or update a label:
+```bash
+kubectl label nodes <node-name> disktype=ssd
+```
+
+Overwrite an existing label value:
+```bash
+kubectl label nodes <node-name> disktype=hdd --overwrite
+```
+
+Show node labels:
+```bash
+kubectl get nodes --show-labels
+kubectl describe node <node-name>
+```
+
+Remove a label (trailing `-`):
+```bash
+kubectl label nodes <node-name> disktype-
+```
+
+---
+
+## Node Affinity
+**Quick explanation**: Node Affinity is an advanced scheduling rule that lets pods match nodes using richer expressions than node selectors.
+
+### What is Node Affinity?
+Node Affinity is configured in `spec.affinity.nodeAffinity` and supports operators such as:
+- `In`
+- `NotIn`
+- `Exists`
+- `DoesNotExist`
+- `Gt`
+- `Lt`
+
+It allows more flexible and readable placement logic than plain `nodeSelector`.
+
+Operator explanations:
+- `In`: matches when the node label value is in a provided list of values.
+  - Example: key `disktype`, values `[ssd, nvme]` -> node matches if label is `ssd` or `nvme`.
+- `NotIn`: matches when the node label value is not in the provided list.
+  - Example: key `environment`, values `[dev]` -> node matches if label is not `dev`.
+- `Exists`: matches when the label key exists on the node, regardless of value.
+  - Example: key `gpu` -> node matches if it has label `gpu=<anything>`.
+- `DoesNotExist`: matches when the label key is absent from the node.
+  - Example: key `spot` -> node matches only if there is no `spot` label.
+- `Gt`: matches when the node label value is an integer greater than the given value.
+  - Example: key `cpu-count`, values `[8]` -> node matches if `cpu-count` label is `9` or higher.
+- `Lt`: matches when the node label value is an integer less than the given value.
+  - Example: key `cpu-count`, values `[16]` -> node matches if `cpu-count` is below `16`.
+
+Notes:
+- `Gt` and `Lt` work with integer-like label values.
+- `Exists` and `DoesNotExist` do not use the `values` field.
+
+---
+
+### What is the limitation of node selectors?
+`nodeSelector` is limited because it only supports exact key-value matching.
+
+Limitations:
+- no OR logic across values
+- no soft preference (only hard matching)
+- no operators like `NotIn`, `Exists`, `Gt`, `Lt`
+- difficult to express complex placement policies
+
+Node Affinity addresses these limitations.
+
+---
+
+### Node affinity types
+1. `requiredDuringSchedulingIgnoredDuringExecution`
+- Hard rule at scheduling time.
+- Pod is scheduled only if rule matches.
+- If node labels change later, pod is not evicted because of `IgnoredDuringExecution`.
+
+2. `preferredDuringSchedulingIgnoredDuringExecution`
+- Soft preference.
+- Scheduler tries to honor it but may place pod elsewhere.
+- Also not re-evaluated for eviction during execution.
+
+---
+
+### Syntax explanation (Affinity only)
+Required (hard) syntax:
+```yaml
+affinity:
+  nodeAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: disktype
+              operator: In
+              values:
+                - ssd
+```
+
+Preferred (soft) syntax:
+```yaml
+affinity:
+  nodeAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 1
+        preference:
+          matchExpressions:
+            - key: zone
+              operator: In
+              values:
+                - us-east-1a
+```
+
+Field notes:
+- `nodeSelectorTerms` are ORed with each other.
+- `matchExpressions` inside one term are ANDed.
+- `weight` range is 1-100 for preference scoring.
+
+---
+
+### Examples of Node Affinity in declarative Pod configuration
+Hard requirement example:
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: affinity-required-demo
+spec:
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: disktype
+                operator: In
+                values:
+                  - ssd
+  containers:
+    - name: app
+      image: nginx
+```
+
+Soft preference example:
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: affinity-preferred-demo
+spec:
+  affinity:
+    nodeAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 80
+          preference:
+            matchExpressions:
+              - key: zone
+                operator: In
+                values:
+                  - us-east-1a
+  containers:
+    - name: app
+      image: nginx
+```
+
+Combined required + preferred example:
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: affinity-combined-demo
+spec:
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: kubernetes.io/os
+                operator: In
+                values:
+                  - linux
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 50
+          preference:
+            matchExpressions:
+              - key: disktype
+                operator: In
+                values:
+                  - ssd
+  containers:
+    - name: app
+      image: nginx
 ```
 
 ---
