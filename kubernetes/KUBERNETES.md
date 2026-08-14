@@ -25,6 +25,16 @@
       - [1. Direct env list in the Pod](#1-direct-env-list-in-the-pod)
       - [2. Single environment variable from ConfigMap or Secret](#2-single-environment-variable-from-configmap-or-secret)
       - [3. Volume way](#3-volume-way)
+  - [Secrets](#secrets)
+    - [Imperative vs Declarative](#imperative-vs-declarative)
+    - [Declarative with plain text vs hash format](#declarative-with-plain-text-vs-hash-format)
+    - [How to convert data to encoded base64](#how-to-convert-data-to-encoded-base64)
+    - [How to decode base64 value to original value](#how-to-decode-base64-value-to-original-value)
+    - [Injecting Secrets in Pod](#injecting-secrets-in-pod)
+      - [1. Inject Secret using ENV](#1-inject-secret-using-env)
+      - [2. Inject single ENV from Secret](#2-inject-single-env-from-secret)
+      - [3. Inject all Secret keys using envFrom](#3-inject-all-secret-keys-using-envfrom)
+      - [4. Inject Secret using Volume](#4-inject-secret-using-volume)
   - [YAML Base Configuration in Kubernetes](#yaml-base-configuration-in-kubernetes)
   - [Replication Controller](#replication-controller)
   - [ReplicaSet](#replicaset)
@@ -34,6 +44,25 @@
   - [Rolling Updates](#rolling-updates)
   - [Deployment (Modern Recommendation)](#deployment-modern-recommendation)
   - [Namespaces](#namespaces)
+  - [Encrypting Secret Data at Rest](#encrypting-secret-data-at-rest)
+    - [How encryption works in Kubernetes](#how-encryption-works-in-kubernetes)
+    - [What is etcdctl?](#what-is-etcdctl)
+    - [Install `etcdctl` on Linux](#install-etcdctl-on-linux)
+      - [Debian / Ubuntu](#debian--ubuntu)
+      - [Ubuntu / Debian (alternative if package name differs)](#ubuntu--debian-alternative-if-package-name-differs)
+      - [RHEL / CentOS / Rocky / AlmaLinux](#rhel--centos--rocky--almalinux)
+      - [Fedora](#fedora)
+      - [OpenSUSE / SLES](#opensuse--sles)
+      - [Arch Linux](#arch-linux)
+      - [Alpine Linux](#alpine-linux)
+    - [`kubectl get pods -n kube-system`](#kubectl-get-pods--n-kube-system)
+  - [Docker Security](#docker-security)
+    - [Running containers with elevated permissions](#running-containers-with-elevated-permissions)
+    - [Linux capabilities and root user behavior](#linux-capabilities-and-root-user-behavior)
+    - [`CAP_SYS_ADMIN` and similar capabilities](#cap_sys_admin-and-similar-capabilities)
+    - [Where capabilities are managed](#where-capabilities-are-managed)
+    - [Best practices for Docker security](#best-practices-for-docker-security)
+    - [Practical secure example](#practical-secure-example)
   - [Final Notes](#final-notes)
   - [Services](#services)
     - [Service Type: ClusterIP](#service-type-clusterip)
@@ -559,6 +588,207 @@ Inside the container, the files appear in `/etc/config`.
 **Summary**: Environment variables are the standard way to pass configuration to containers. Use literal `env` entries for simple values, ConfigMap for non-sensitive settings, and Secret for sensitive information. You can inject them directly as environment variables or mount them as files through a volume.
 
 ---
+
+## Secrets
+**Quick explanation**: A Secret is used to store sensitive data such as passwords, API keys, certificates, and tokens. Kubernetes keeps this data in a dedicated object and injects it into pods only when needed.
+
+**Why Secrets matter**:
+- Protect sensitive values from hardcoding in manifests
+- Keep credentials separate from application code
+- Support secure runtime configuration
+- Work with both environment variables and mounted files
+
+### Imperative vs Declarative
+**Imperative creation**:
+```bash
+kubectl create secret generic app-secret --from-literal=DB_PASSWORD=supersecret
+```
+
+**Declarative creation**:
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: app-secret
+type: Opaque
+stringData:
+  DB_PASSWORD: supersecret
+```
+
+```bash
+kubectl apply -f secret.yaml
+```
+
+**Difference**:
+- Imperative is quick and useful for testing or one-off tasks.
+- Declarative is preferred for production and version-controlled infrastructure.
+
+### Declarative with plain text vs hash format
+A Secret can be written in either a readable plain-text form or the encoded data form.
+
+**Plain text form**:
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: app-secret
+type: Opaque
+stringData:
+  DB_PASSWORD: supersecret
+```
+
+**Encoded/base64 form**:
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: app-secret
+type: Opaque
+data:
+  DB_PASSWORD: c3VwZXJzZWNyZXQ=
+```
+
+The value `c3VwZXJzZWNyZXQ=` is the base64 encoding of `supersecret`.
+
+**Important note**:
+- Kubernetes stores Secret data in base64 form in the API object.
+- `stringData` is simply a more readable way to write the secret in YAML.
+- `data` is the encoded form used behind the scenes.
+
+### How to convert data to encoded base64
+On Linux/macOS:
+```bash
+echo -n 'supersecret' | base64
+```
+
+Output:
+```bash
+c3VwZXJzZWNyZXQ=
+```
+
+On Windows PowerShell:
+```powershell
+[Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes('supersecret'))
+```
+
+### How to decode base64 value to original value
+On Linux/macOS:
+```bash
+echo -n 'c3VwZXJzZWNyZXQ=' | base64 --decode
+```
+
+Output:
+```bash
+supersecret
+```
+
+On Windows PowerShell:
+```powershell
+[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('c3VwZXJzZWNyZXQ='))
+```
+
+**Important**: Base64 is not encryption. It is only an encoding method used to safely transport data inside Kubernetes API objects.
+
+### Injecting Secrets in Pod
+Secrets can be injected in several ways.
+
+#### 1. Inject Secret using ENV
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: app-secret
+type: Opaque
+stringData:
+  DB_PASSWORD: supersecret
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: secret-env
+spec:
+  containers:
+    - name: app
+      image: nginx
+      env:
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: app-secret
+              key: DB_PASSWORD
+```
+
+This makes the variable `DB_PASSWORD` available inside the container.
+
+#### 2. Inject single ENV from Secret
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: single-secret-env
+spec:
+  containers:
+    - name: app
+      image: busybox
+      env:
+        - name: API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: app-secret
+              key: API_KEY
+```
+
+Use this when only one secret value is needed.
+
+#### 3. Inject all Secret keys using envFrom
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: secret-env-from
+spec:
+  containers:
+    - name: app
+      image: busybox
+      envFrom:
+        - secretRef:
+            name: app-secret
+```
+
+This injects all keys from the Secret as environment variables.
+
+#### 4. Inject Secret using Volume
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: app-secret
+type: Opaque
+stringData:
+  DB_PASSWORD: supersecret
+  API_KEY: abc123
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: secret-volume
+spec:
+  containers:
+    - name: app
+      image: nginx
+      volumeMounts:
+        - name: secret-volume
+          mountPath: /etc/secrets
+          readOnly: true
+  volumes:
+    - name: secret-volume
+      secret:
+        secretName: app-secret
+```
+
+Inside the container, the Secret values appear as files under `/etc/secrets`.
+
+**Summary**: Secrets should be used for sensitive information. They can be created imperatively or declaratively, stored in readable `stringData` or encoded `data`, and then injected into pods as environment variables or mounted files.
 
 ---
 
@@ -1125,6 +1355,349 @@ kubectl get svc
 # 5. Check all namespaces
 kubectl get all -A
 ```
+
+---
+
+## Encrypting Secret Data at Rest
+**Official Kubernetes documentation**: https://kubernetes.io/docs/tasks/administer-cluster/encrypt-data/
+
+**Quick explanation**: Kubernetes can encrypt API resource data before it is stored in etcd. This is especially important for sensitive objects like `Secret`, but the same mechanism can also apply to `ConfigMap` or other configured resources. This protects data at rest in etcd, even if someone gains access to the etcd database files.
+
+### How encryption works in Kubernetes
+Kubernetes does not encrypt the full disk or protect every part of the system by itself. Instead, the Kubernetes API server is configured with an `--encryption-provider-config` file that tells it how to encrypt data before writing to etcd.
+
+According to the official docs:
+- By default, Kubernetes stores resource data in etcd in plain text unless encryption is explicitly configured.
+- The API server reads the `EncryptionConfiguration` file and uses the configured provider to encrypt selected resources.
+- The first provider in the list is used for encryption of new writes.
+- When reading existing data, Kubernetes tries each configured provider in order to decrypt it.
+
+Example configuration:
+```yaml
+apiVersion: apiserver.config.k8s.io/v1
+kind: EncryptionConfiguration
+resources:
+  - resources:
+      - secrets
+      - configmaps
+    providers:
+      - aescbc:
+          keys:
+            - name: key1
+              secret: <BASE64-ENCODED-SECRET>
+      - identity: {}
+```
+
+This means:
+- `aescbc` is the real encryption provider
+- `identity` is a fallback that allows reading unencrypted data during a migration
+- after migration, the `identity` provider is usually removed so Kubernetes cannot read plaintext accidentally
+
+The Kubernetes docs also note that `Secret` objects are a common target for this feature because they often contain passwords, tokens, and private credentials.
+
+**Important**: This is encryption at rest for API data in etcd, not filesystem encryption inside containers. For data inside mounted volumes, you still need volume-level or application-level encryption.
+
+**Typical control-plane flow**:
+1. A client creates or updates a `Secret` via the Kubernetes API.
+2. The `kube-apiserver` receives the request.
+3. The API server applies the configured encryption provider.
+4. The encrypted result is stored in etcd.
+5. When a client reads the object, the API server decrypts it before returning it.
+
+This is why etcd is critical for Kubernetes state and why encryption configuration must be protected carefully.
+
+---
+
+### What is etcdctl?
+`etcdctl` is the command-line client for etcd. It lets administrators inspect the key/value store that Kubernetes uses for its cluster state.
+
+In Kubernetes, etcd stores the cluster state, including objects such as Pods, Services, and Secrets. The official Kubernetes doc shows an example of verifying encryption with `etcdctl` after creating a Secret:
+
+```bash
+kubectl create secret generic secret1 -n default --from-literal=mykey=mydata
+
+ETCDCTL_API=3 etcdctl \
+  --cacert=/etc/kubernetes/pki/etcd/ca.crt \
+  --cert=/etc/kubernetes/pki/etcd/server.crt \
+  --key=/etc/kubernetes/pki/etcd/server.key \
+  get /registry/secrets/default/secret1 | hexdump -C
+```
+
+If encryption is enabled, the output will not show plain text. You will see a value that is prefixed with something like:
+```text
+k8s:enc:aescbc:v1:key1:
+```
+
+This tells you the stored Secret was encrypted using the `aescbc` provider and key `key1`.
+
+**Why this matters**:
+- Without encryption, etcd contains plain-text resource objects
+- With encryption at rest, even if etcd files are read, the sensitive data is protected
+- `etcdctl` is a troubleshooting and verification tool for checking whether the data was written in encrypted form
+
+**Official etcd docs**: https://etcd.io/docs/latest/install/
+
+---
+
+### Install `etcdctl` on Linux
+The `etcdctl` binary is usually provided by the etcd package. The installation package name varies depending on the Linux distribution.
+
+#### Debian / Ubuntu
+```bash
+sudo apt-get update
+sudo apt-get install etcd-client
+```
+
+#### Ubuntu / Debian (alternative if package name differs)
+```bash
+sudo apt-cache search etcd | grep client
+sudo apt-get install etcd-client
+```
+
+#### RHEL / CentOS / Rocky / AlmaLinux
+```bash
+sudo yum install -y etcd
+```
+
+or
+```bash
+sudo dnf install -y etcd
+```
+
+#### Fedora
+```bash
+sudo dnf install -y etcd
+```
+
+#### OpenSUSE / SLES
+```bash
+sudo zypper install etcd
+```
+
+#### Arch Linux
+```bash
+sudo pacman -S etcd
+```
+
+#### Alpine Linux
+```bash
+sudo apk add etcd
+```
+
+**Check installation**:
+```bash
+etcdctl --version
+```
+
+**Note**: In some distributions the client may come as part of the `etcd` package, and in others it is packaged separately as `etcd-client`. The exact name depends on the distro and version repository.
+
+---
+
+### `kubectl get pods -n kube-system`
+This command lists all Pods in the `kube-system` namespace:
+
+```bash
+kubectl get pods -n kube-system
+```
+
+It is used to inspect the Kubernetes control-plane and cluster add-ons that run inside that namespace, such as:
+- `kube-apiserver`
+- `etcd`
+- `kube-scheduler`
+- `kube-controller-manager`
+- `coredns`
+- networking and cluster add-ons depending on the environment
+
+The Kubernetes components page explains that the control plane manages the overall state of the cluster and includes components like the API server and etcd. The `kube-system` namespace is where many of those system-critical components live.
+
+Examples:
+```bash
+kubectl get pods -n kube-system -o wide
+kubectl get pods -A
+kubectl describe pod <pod-name> -n kube-system
+kubectl logs <pod-name> -n kube-system
+```
+
+**Why this is useful**:
+- Check whether the control plane is healthy
+- Confirm that etcd and API server pods are running
+- Troubleshoot cluster issues
+- Investigate failed add-ons or networking components
+
+**Important**: `kube-system` is not for normal application workloads; it is reserved for Kubernetes system components and cluster services.
+
+---
+
+## Docker Security
+**Quick explanation**: Docker containers are not automatically isolated at the same level as a virtual machine. If a container is started with elevated privileges, it can abuse host-like capabilities. Security is improved when you run containers as a non-root user and remove unnecessary Linux capabilities.
+
+### Running containers with elevated permissions
+The biggest risk is starting a container in privileged mode:
+
+```bash
+docker run --privileged nginx
+```
+
+`--privileged` gives the container nearly all capabilities, including device access and strong host-like control. This is useful for debugging or special workloads, but it should be avoided for normal production containers.
+
+Other dangerous patterns:
+- Running as root inside the container
+- Mounting the host filesystem or Docker socket
+- Using host networking or host PID namespace
+- Sharing the host network namespace, IPC, or group permissions unnecessarily
+
+Examples:
+```bash
+docker run --privileged --pid host --network host nginx
+```
+
+This kind of setup can let a process escape the container boundary or interfere with the host.
+
+### Linux capabilities and root user behavior
+In Linux, capabilities are fine-grained privileges. The root user has many capabilities by default, but a non-root user normally does not. Docker containers inherit this model.
+
+Common capabilities include:
+- `NET_ADMIN` — modify network interfaces and firewall rules
+- `NET_RAW` — create raw sockets
+- `SYS_ADMIN` — broad system administration access
+- `MKNOD` — create device nodes
+- `SYS_PTRACE` — inspect other processes
+
+When a container runs with extra privileges, it can do more than an application should normally be allowed to do.
+
+**Important rule**:
+- Do not grant capabilities unless the application really needs them.
+- Prefer dropping all and adding only the required ones.
+
+Examples:
+```bash
+docker run --cap-drop=ALL --cap-add=NET_BIND_SERVICE nginx
+```
+
+This removes all capabilities and then adds only the minimal capability needed.
+
+### `CAP_SYS_ADMIN` and similar capabilities
+`CAP_SYS_ADMIN` is one of the most dangerous capabilities because it allows system administration actions that can affect the host or container runtime behavior.
+
+Example:
+```bash
+docker run --cap-add=SYS_ADMIN nginx
+```
+
+This is risky because it can enable operations like:
+- mount/umount filesystems
+- modify kernel-level behavior
+- manipulate networking and system settings
+- interfere with the host environment when combined with other privileged settings
+
+Other dangerous capabilities include:
+- `CAP_SYS_MODULE` — load kernel modules
+- `CAP_SYS_PTRACE` — debug processes
+- `CAP_NET_ADMIN` — modify networking rules
+- `CAP_MKNOD` — create device files
+
+**Best practice**: never add broad capabilities to a container unless you fully understand the impact.
+
+### Where capabilities are managed
+Capabilities are not usually stored in a user profile file. They are Linux kernel attributes attached to processes or binary files.
+
+For a running process, check capabilities with:
+```bash
+capsh --print
+getpcaps 1234
+```
+
+For a file, set file capabilities with:
+```bash
+setcap cap_net_bind_service=+ep /usr/local/bin/mybinary
+getcap /usr/local/bin/mybinary
+```
+
+This means:
+- `capsh --print` shows the effective capabilities of the current process
+- `getpcaps` shows a process capability set
+- `setcap` and `getcap` are used for file-based capabilities on Linux
+
+This is different from a user “capabilities file” in the sense that the real capability state is attached to the process or executable, not stored as a normal user config file.
+
+### Best practices for Docker security
+1. Run containers as a non-root user
+```dockerfile
+FROM nginx
+RUN useradd -r -s /usr/sbin/nologin appuser
+USER appuser
+```
+
+2. Drop all capabilities by default
+```bash
+docker run --cap-drop=ALL nginx
+```
+
+3. Add only the required capabilities
+```bash
+docker run --cap-drop=ALL --cap-add=NET_BIND_SERVICE nginx
+```
+
+4. Avoid `--privileged` unless absolutely required
+```bash
+docker run --privileged nginx
+```
+This should be the exception, not the default.
+
+5. Use read-only filesystem when possible
+```bash
+docker run --read-only nginx
+```
+
+6. Do not mount the Docker socket into containers
+```bash
+docker run -v /var/run/docker.sock:/var/run/docker.sock nginx
+```
+This is a common container breakout risk.
+
+7. Use seccomp, AppArmor, or SELinux profiles
+```bash
+docker run --security-opt seccomp=default.json nginx
+```
+
+8. Prefer minimal base images
+- Smaller images reduce attack surface
+- Fewer installed packages means fewer vulnerable binaries
+
+9. Use image scanning and patching
+- Rebuild images regularly
+- Remove unnecessary packages and tools
+- Keep OS packages current
+
+10. Use resource limits and network restrictions
+```bash
+docker run --memory=256m --cpus=0.5 --network=none nginx
+```
+
+11. Keep host and container namespaces separate
+- Avoid `--pid host`
+- Avoid `--network host`
+- Avoid `--privileged`
+
+12. Limit volumes and bind mounts
+- Mount only the exact directories the app needs
+- Do not expose `/etc`, `/var/run`, or `/proc` unnecessarily
+
+### Practical secure example
+```bash
+docker run -d \
+  --name webapp \
+  --user 1000:1000 \
+  --cap-drop=ALL \
+  --cap-add=NET_BIND_SERVICE \
+  --read-only \
+  -p 8080:80 \
+  nginx:stable
+```
+
+This design keeps the container from running as root and removes unnecessary privileges while allowing only the required capability.
+
+**Summary**: A container should run with the least privilege possible. Root and `CAP_SYS_ADMIN`-style permissions should be avoided unless a real requirement exists. The safer pattern is: non-root user + `--cap-drop=ALL` + add only minimal capabilities + strong runtime isolation.
 
 ---
 
