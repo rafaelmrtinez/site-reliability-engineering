@@ -64,6 +64,10 @@
     - [Best practices for Docker security](#best-practices-for-docker-security)
     - [Practical secure example](#practical-secure-example)
   - [Final Notes](#final-notes)
+  - [Kubernetes Pod Security Context](#kubernetes-pod-security-context)
+    - [What is security context?](#what-is-security-context)
+    - [What is `runAsUser`?](#what-is-runasuser)
+    - [What are capabilities?](#what-are-capabilities)
   - [Services](#services)
     - [Service Type: ClusterIP](#service-type-clusterip)
     - [Service Type: NodePort](#service-type-nodeport)
@@ -1729,6 +1733,147 @@ kubectl describe deployment myapp-deploy
 ```
 
 **Summary**: Kubernetes moves from basic pod creation to replicated workloads and finally to managed deployments for real-world application delivery.
+
+---
+
+## Kubernetes Pod Security Context
+**Quick explanation**: A Pod security context defines the security settings for a pod or container. It controls things like which user should run the process, whether the container can run privileged, and which Linux capabilities are allowed. This is one of the main ways Kubernetes enforces least privilege.
+
+### What is security context?
+A `securityContext` is a Kubernetes field used to define security-related configuration for a Pod or an individual container.
+
+It can be placed at:
+- Pod level: applies to all containers in the pod
+- Container level: applies to a specific container only
+
+Example:
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: app-pod
+spec:
+  securityContext:
+    runAsUser: 1000
+    runAsGroup: 3000
+    fsGroup: 2000
+  containers:
+    - name: app
+      image: nginx
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+```
+
+This controls how the container process runs and what privileges it has at runtime.
+
+**Why it matters**:
+- runs containers as a non-root user
+- reduces privilege escalation risk
+- minimizes container attack surface
+- helps secure workloads in production
+
+---
+
+### What is `runAsUser`?
+`runAsUser` sets the user ID (UID) that the container process should run as.
+
+Example:
+```yaml
+spec:
+  securityContext:
+    runAsUser: 1000
+```
+
+This tells Kubernetes to start the container process as UID 1000 instead of the default root user.
+
+**Why it is important**:
+- reduces the risk of running as root inside the container
+- better matches least-privilege principles
+- avoids direct root-level actions inside the app process
+
+Example with Pod + container:
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: non-root-pod
+spec:
+  securityContext:
+    runAsUser: 1000
+  containers:
+    - name: app
+      image: nginx
+```
+
+You can also set it at the container level:
+```yaml
+containers:
+  - name: app
+    image: nginx
+    securityContext:
+      runAsUser: 1000
+```
+
+**Good practice**: run application containers as a non-root UID whenever possible.
+
+---
+
+### What are capabilities?
+Linux capabilities are fine-grained privileges that can be granted to a process instead of giving full root access. In Kubernetes, capabilities are controlled with the `securityContext.capabilities` field.
+
+Example:
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: capabilities-demo
+spec:
+  containers:
+    - name: app
+      image: nginx
+      securityContext:
+        capabilities:
+          drop:
+            - ALL
+          add:
+            - NET_BIND_SERVICE
+```
+
+This means:
+- `drop: [ALL]` removes all capabilities
+- `add: [NET_BIND_SERVICE]` grants only the needed capability
+
+**Why this matters**:
+- root is powerful, but Linux capabilities allow a narrower and more controlled set of permissions
+- a container can be allowed a small subset of privileges without full root access
+- it reduces the chance of abuse if the application is compromised
+
+Common examples of capabilities:
+- `NET_ADMIN` — modify network configuration
+- `NET_RAW` — raw socket access
+- `SYS_ADMIN` — broad administrative power
+- `MKNOD` — create device files
+- `SETUID` / `SETGID` — change process ownership or group
+
+**Best practice**:
+- drop all capabilities by default
+- add only the capability the app truly needs
+- avoid `privileged: true` unless absolutely required
+
+**Example of locking down a container**:
+```yaml
+securityContext:
+  runAsNonRoot: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+```
+
+This is a recommended hardening pattern for many workloads.
+
+**Summary**: `securityContext` gives you control over container security, `runAsUser` sets the Linux user ID, and `capabilities` let you grant or remove specific privileges in a granular way instead of giving full root power.
 
 ---
 
