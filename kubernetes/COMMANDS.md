@@ -61,9 +61,29 @@ kubectl logs nginx
 kubectl logs -f nginx
 kubectl logs deployment/nginx
 kubectl exec -it nginx -- /bin/sh
+kubectl exec ubuntu-sleeper -- whoami
 ```
 
 #### Note: `kubectl exec` lets you enter a running container for troubleshooting and quick checks.
+
+**Explain: `kubectl exec ubuntu-sleeper -- whoami`**
+```bash
+kubectl exec ubuntu-sleeper -- whoami
+```
+
+This command runs the `whoami` command inside the container named `ubuntu-sleeper`.
+
+- `kubectl exec` executes a command inside a running pod/container
+- `ubuntu-sleeper` is the pod name
+- `--` separates kubectl flags from the command to run inside the container
+- `whoami` prints the effective user inside the container
+
+Example output:
+```bash
+root
+```
+
+This is useful for verifying which user the application is running as, checking permissions, debugging issues, and confirming container security settings.
 
 **Expose services locally**
 ```bash
