@@ -93,6 +93,25 @@
   - [Resource Quotas](#resource-quotas)
     - [What are resource quotas?](#what-are-resource-quotas)
     - [Why are Resource Quotas configured at the Namespace level?](#why-are-resource-quotas-configured-at-the-namespace-level)
+  - [Service Account](#service-account)
+    - [What is a Service Account?](#what-is-a-service-account)
+    - [Difference between User and Service Account](#difference-between-user-and-service-account)
+    - [What are tokens?](#what-are-tokens)
+    - [How do they work?](#how-do-they-work)
+    - [kubectl commands for ServiceAccount](#kubectl-commands-for-serviceaccount)
+    - [Where is it mounted in a pod?](#where-is-it-mounted-in-a-pod)
+    - [How to create a ServiceAccount](#how-to-create-a-serviceaccount)
+      - [Imperative way](#imperative-way-1)
+      - [Declarative way](#declarative-way-1)
+    - [How to associate a ServiceAccount to a pod](#how-to-associate-a-serviceaccount-to-a-pod)
+    - [ServiceAccount per namespace](#serviceaccount-per-namespace)
+    - [Does Kubernetes automatically create a token?](#does-kubernetes-automatically-create-a-token)
+  - [Talking to the cluster outside the cluster (CI/CD tools, Monitoring, etc.)](#talking-to-the-cluster-outside-the-cluster-cicd-tools-monitoring-etc)
+    - [How to create a token](#how-to-create-a-token)
+    - [How to decode a token](#how-to-decode-a-token)
+      - [Base decode with Python](#base-decode-with-python)
+      - [Example token decode output](#example-token-decode-output)
+    - [Check RBAC configuration files](#check-rbac-configuration-files)
   - [Services](#services)
     - [Service Type: ClusterIP](#service-type-clusterip)
     - [Service Type: NodePort](#service-type-nodeport)
@@ -2377,6 +2396,333 @@ In other words, ResourceQuota is used to control the total sum of resources in a
 - **ResourceQuota**: applies to all workloads in a namespace combined
 
 **Summary**: LimitRange controls the minimum, maximum, and default values per object, while ResourceQuota controls the total usage allowed across all objects in a namespace.
+
+---
+
+## Service Account
+**Quick explanation**: A ServiceAccount is an identity used by workloads inside Kubernetes to authenticate to the Kubernetes API. It is the Kubernetes equivalent of a non-human account used by pods, controllers, and automation tools.
+
+### What is a Service Account?
+A ServiceAccount is a Kubernetes object that provides an identity for processes running inside a pod.
+
+It is commonly used for:
+- pods that need to talk to the Kubernetes API
+- CI/CD systems that deploy resources
+- monitoring agents that read cluster data
+- controllers and automation jobs
+
+**Example**:
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: app-sa
+  namespace: dev
+```
+
+---
+
+### Difference between User and Service Account
+**User**:
+- represents a human or external identity
+- usually managed by an external auth system such as OIDC, LDAP, or an enterprise identity provider
+- not created by Kubernetes by default for normal app workloads
+
+**ServiceAccount**:
+- represents an application or workload identity inside the cluster
+- created inside Kubernetes
+- used by pods, jobs, controllers, and automation
+- usually scoped to a namespace
+
+**Key difference**:
+- a user authenticates to the cluster as a person or external system
+- a service account authenticates as a workload running in the cluster
+
+---
+
+### What are tokens?
+Tokens are credentials used by Kubernetes to authenticate a ServiceAccount to the API server.
+
+In practice, Kubernetes ServiceAccount tokens are usually JWTs (JSON Web Tokens).
+
+A token usually contains:
+- issuer information
+- subject (the service account)
+- audience
+- expiration time
+- namespace and name claims
+
+**Example structure**:
+```text
+eyJhbGciOiJSUzI1NiIsImtpZCI6IiJ9...
+```
+
+This token is used when a pod or automation tool calls the Kubernetes API.
+
+---
+
+### How do they work?
+When a pod is assigned a ServiceAccount, Kubernetes mounts a token into the pod filesystem.
+
+Default mount path:
+```bash
+/var/run/secrets/kubernetes.io/serviceaccount/
+```
+
+Inside that directory you usually see:
+- `token`
+- `namespace`
+- `ca.crt`
+
+Example:
+```bash
+ls -la /var/run/secrets/kubernetes.io/serviceaccount/
+```
+
+Typical output:
+```bash
+ca.crt  namespace  token
+```
+
+The pod can then use that token to authenticate to the Kubernetes API with a certificate authority and API server URL.
+
+**How it works conceptually**:
+1. Pod gets a ServiceAccount
+2. Kubernetes creates or mounts a token
+3. The token is mounted in the container filesystem
+4. App uses the token to authenticate to the API server
+5. API server checks the token and authorizes the request based on RBAC
+
+---
+
+### kubectl commands for ServiceAccount
+Common commands:
+```bash
+kubectl get serviceaccount
+kubectl get sa
+kubectl get sa -A
+
+kubectl describe sa default
+kubectl describe sa app-sa -n dev
+
+kubectl create sa app-sa -n dev
+kubectl delete sa app-sa -n dev
+```
+
+To view tokens associated with a service account:
+```bash
+kubectl get secret -n dev
+kubectl describe secret <secret-name> -n dev
+```
+
+**Note**: In newer Kubernetes versions, tokens may be projected as projected volume tokens instead of long-lived secret objects, depending on the cluster configuration.
+
+---
+
+### Where is it mounted in a pod?
+Kubernetes mounts the ServiceAccount token and related files here:
+```bash
+/var/run/secrets/kubernetes.io/serviceaccount/
+```
+
+It includes:
+- `token`: bearer token used for API authentication
+- `namespace`: current namespace name
+- `ca.crt`: certificate authority for verifying the API server certificate
+
+This is the standard in-cluster authentication path for a pod.
+
+---
+
+### How to create a ServiceAccount
+#### Imperative way
+```bash
+kubectl create serviceaccount app-sa -n dev
+```
+
+or
+```bash
+kubectl create sa app-sa -n dev
+```
+
+#### Declarative way
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: app-sa
+  namespace: dev
+```
+
+```bash
+kubectl apply -f serviceaccount.yaml
+```
+
+---
+
+### How to associate a ServiceAccount to a pod
+You specify `serviceAccountName` in the Pod spec.
+
+Example:
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: myapp
+  namespace: dev
+spec:
+  serviceAccountName: app-sa
+  containers:
+    - name: app
+      image: nginx
+```
+
+This tells Kubernetes to use `app-sa` for the pod identity.
+
+---
+
+### ServiceAccount per namespace
+A ServiceAccount belongs to a namespace.
+
+Example:
+```bash
+kubectl get sa -n dev
+kubectl get sa -n prod
+```
+
+This means:
+- the same name can exist in different namespaces
+- the account is isolated by namespace
+- RBAC permissions are usually assigned per namespace
+
+---
+
+### Does Kubernetes automatically create a token?
+**Yes, in most cases Kubernetes will automatically provide a token for a ServiceAccount used by a pod.**
+
+Historically, Kubernetes created a Secret containing a token for each default ServiceAccount, but modern clusters often use projected service account tokens mounted via the token controller. The important point is:
+- a pod can authenticate to the API using the ServiceAccount token automatically
+- the token is mounted into the pod without you manually creating it in the container
+
+For the default ServiceAccount, a pod can often use it automatically if no custom `serviceAccountName` is specified.
+
+Example:
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: default-sa-pod
+spec:
+  containers:
+    - name: app
+      image: nginx
+```
+
+This pod will use the default ServiceAccount of its namespace unless configured otherwise.
+
+---
+
+## Talking to the cluster outside the cluster (CI/CD tools, Monitoring, etc.)
+**Quick explanation**: External tools such as CI/CD systems, monitoring agents, and automation scripts also need a way to authenticate to the Kubernetes API. This is typically done with a ServiceAccount and a token.
+
+### How to create a token
+Create a ServiceAccount first:
+```bash
+kubectl create namespace ci
+kubectl create serviceaccount ci-bot -n ci
+```
+
+Then create a token for that service account.
+
+For modern Kubernetes:
+```bash
+kubectl create token ci-bot -n ci
+```
+
+This prints a JWT token you can use as a bearer token in external tools.
+
+Example:
+```bash
+export TOKEN=$(kubectl create token ci-bot -n ci)
+```
+
+Then use it with `kubectl`:
+```bash
+kubectl get pods -n ci --token="$TOKEN"
+```
+
+or with an external client:
+```bash
+curl -H "Authorization: Bearer $TOKEN" \
+  https://<kubernetes-api-server>:6443/api/v1/namespaces/default/pods
+```
+
+---
+
+### How to decode a token
+ServiceAccount tokens are usually JWTs, so they can be decoded.
+
+#### Base decode with Python
+```bash
+python - <<'PY'
+import base64, json, os
+
+token = os.environ['TOKEN']
+header, payload, sig = token.split('.')
+
+def b64url_decode(s):
+    s += '=' * (-len(s) % 4)
+    return base64.urlsafe_b64decode(s.encode())
+
+print(json.dumps(json.loads(b64url_decode(payload)), indent=2))
+PY
+```
+
+#### Example token decode output
+```json
+{
+  "aud": [
+    "https://kubernetes.default.svc"
+  ],
+  "exp": 1750000000,
+  "iat": 1740000000,
+  "iss": "https://kubernetes.default.svc.cluster.local",
+  "kubernetes.io": {
+    "namespace": "ci",
+    "serviceaccount": {
+      "name": "ci-bot",
+      "uid": "..."
+    }
+  },
+  "nbf": 1740000000,
+  "sub": "system:serviceaccount:ci:ci-bot"
+}
+```
+
+This shows which namespace and service account the token belongs to.
+
+**Important**: a token is not a password; it is a signed bearer credential that Kubernetes validates against its auth system.
+
+**Best practice**: keep tokens short-lived and rotate them regularly. Use RBAC to limit the permissions of the ServiceAccount.
+
+### Check RBAC configuration files
+If your environment stores RBAC policy/configuration files on disk, check this directory:
+
+```bash
+/var/rbac
+```
+
+Where it can be found:
+- on the control-plane node filesystem
+- at `/var/rbac`
+
+Useful checks:
+```bash
+ls -la /var/rbac
+find /var/rbac -maxdepth 2 -type f
+```
+
+If the directory does not exist, RBAC is likely managed directly by Kubernetes API objects (Roles, ClusterRoles, RoleBindings, ClusterRoleBindings) rather than local files.
 
 ---
 
