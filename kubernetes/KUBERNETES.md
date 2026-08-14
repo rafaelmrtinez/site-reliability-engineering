@@ -63,6 +63,10 @@
     - [Tolerations in declarative Pod config (and quoting)](#tolerations-in-declarative-pod-config-and-quoting)
     - [What does `kubectl describe node kubemaster` do?](#what-does-kubectl-describe-node-kubemaster-do)
     - [Does the master/control-plane node schedule normal pods?](#does-the-mastercontrol-plane-node-schedule-normal-pods)
+  - [Node Affinity vs Taints](#node-affinity-vs-taints)
+    - [Differences](#differences)
+    - [Use cases](#use-cases)
+    - [Can we combine them?](#can-we-combine-them)
   - [Encrypting Secret Data at Rest](#encrypting-secret-data-at-rest)
     - [How encryption works in Kubernetes](#how-encryption-works-in-kubernetes)
     - [What is etcdctl?](#what-is-etcdctl)
@@ -1810,6 +1814,89 @@ kubectl taint nodes <control-plane-node> node-role.kubernetes.io/master:NoSchedu
 ```
 
 Use this carefully in production environments.
+
+---
+
+## Node Affinity vs Taints
+**Quick explanation**: Both affect pod placement, but they solve different scheduling problems and are often strongest when used together.
+
+### Differences
+1. Direction of control
+- Node Affinity is pod-driven (the pod asks for matching nodes).
+- Taints are node-driven (the node repels pods unless tolerated).
+
+2. Primary purpose
+- Node Affinity selects where a pod should run.
+- Taints protect nodes from unwanted pods.
+
+3. Scheduling behavior
+- Affinity can be hard (`required`) or soft (`preferred`).
+- Taints can block (`NoSchedule`), discourage (`PreferNoSchedule`), or evict (`NoExecute`).
+
+4. Matching model
+- Affinity uses label expressions (`In`, `NotIn`, `Exists`, `Gt`, etc.).
+- Taints require matching tolerations in the pod.
+
+5. Typical ownership
+- Application/platform teams define affinity in workload manifests.
+- Cluster operators define taints on nodes.
+
+---
+
+### Use cases
+Node Affinity common use cases:
+- place pods on SSD or GPU nodes
+- keep workloads in specific zones or hardware classes
+- prefer lower-cost nodes while allowing fallback
+
+Taints common use cases:
+- reserve dedicated nodes for special workloads
+- protect control-plane nodes from normal applications
+- isolate sensitive or high-priority capacity
+- evict pods on unhealthy/special-condition nodes (`NoExecute`)
+
+Rule of thumb:
+- use Affinity when pods need certain node characteristics
+- use Taints when nodes must reject general workloads by default
+
+---
+
+### Can we combine them?
+Yes. Combining them is a best-practice pattern for strict workload isolation.
+
+Example strategy:
+1. Label and taint a node pool for `payments`.
+2. Add Node Affinity in payment pods to require that label.
+3. Add matching toleration so those pods are allowed onto tainted nodes.
+
+Practical result:
+- Affinity ensures payment pods target the correct nodes.
+- Taints ensure non-payment pods are kept out.
+
+Minimal combined pod snippet:
+```yaml
+spec:
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: workload
+                operator: In
+                values:
+                  - payments
+  tolerations:
+    - key: "workload"
+      operator: "Equal"
+      value: "payments"
+      effect: "NoSchedule"
+```
+
+Related node commands:
+```bash
+kubectl label node <node-name> workload=payments
+kubectl taint node <node-name> workload=payments:NoSchedule
+```
 
 ---
 
