@@ -13,6 +13,18 @@
     - [Pod characteristics](#pod-characteristics)
   - [kubectl Basics](#kubectl-basics)
   - [Commands and Arguments](#commands-and-arguments)
+  - [Environment Variables](#environment-variables)
+    - [Basic env setting](#basic-env-setting)
+    - [Using ConfigMap](#using-configmap)
+    - [Using Secrets](#using-secrets)
+    - [How to create ConfigMap](#how-to-create-configmap)
+      - [Imperative way](#imperative-way)
+      - [Declarative way](#declarative-way)
+    - [Create ConfigMap and inject to Pod](#create-configmap-and-inject-to-pod)
+    - [ENV, Single ENV, and Volume way](#env-single-env-and-volume-way)
+      - [1. Direct env list in the Pod](#1-direct-env-list-in-the-pod)
+      - [2. Single environment variable from ConfigMap or Secret](#2-single-environment-variable-from-configmap-or-secret)
+      - [3. Volume way](#3-volume-way)
   - [YAML Base Configuration in Kubernetes](#yaml-base-configuration-in-kubernetes)
   - [Replication Controller](#replication-controller)
   - [ReplicaSet](#replicaset)
@@ -227,6 +239,326 @@ This starts NGINX explicitly, passing the runtime flags it needs.
 - In Docker terms, `command` aligns with `ENTRYPOINT`, and `args` aligns with `CMD`.
 
 **Summary**: Understanding `command` and `args` is essential because Kubernetes does not just run a container image blindly. It can override the image's default startup behavior in a way that mirrors how Docker configures `ENTRYPOINT` and `CMD`.
+
+---
+
+## Environment Variables
+**Quick explanation**: Environment variables are key-value pairs passed into a container at runtime. They are used to configure application behavior without baking values directly into the container image.
+
+**Why environment variables matter**:
+- Keep configuration separate from the application code
+- Make it easy to change values between environments
+- Support dev, test, and production settings
+- Work well with Kubernetes ConfigMaps and Secrets
+
+### Basic env setting
+The simplest way is to define environment variables directly inside the pod manifest.
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: env-basic
+spec:
+  containers:
+    - name: app
+      image: nginx
+      env:
+        - name: APP_ENV
+          value: production
+        - name: LOG_LEVEL
+          value: info
+```
+
+**This is a single pod definition**: the environment variables are included directly in the manifest.
+
+**Example with one variable**:
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: single-env
+spec:
+  containers:
+    - name: app
+      image: busybox
+      env:
+        - name: MESSAGE
+          value: "Hello from Kubernetes"
+```
+
+**The `env` field is a list of key-value entries**. Each entry includes:
+- `name`: the variable name
+- `value`: the literal value assigned to that variable
+
+### Using ConfigMap
+A ConfigMap stores non-sensitive configuration data. It can be mounted as environment variables or as a volume.
+
+**Basic ConfigMap YAML**:
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+data:
+  APP_ENV: production
+  LOG_LEVEL: debug
+```
+
+**Inject ConfigMap as environment variables in a Pod**:
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: env-from-configmap
+spec:
+  containers:
+    - name: app
+      image: nginx
+      env:
+        - name: APP_ENV
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: APP_ENV
+        - name: LOG_LEVEL
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: LOG_LEVEL
+```
+
+**Inject all ConfigMap key/value pairs into a Pod**:
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: env-from-configmap-all
+spec:
+  containers:
+    - name: app
+      image: busybox
+      envFrom:
+        - configMapRef:
+            name: app-config
+```
+
+**This is the declarative way**: the ConfigMap is defined separately and then referenced by the pod.
+
+### Using Secrets
+A Secret is used for sensitive data such as passwords, tokens, and keys.
+
+**Create a Secret**:
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: app-secret
+type: Opaque
+stringData:
+  DB_PASSWORD: supersecret
+```
+
+**Inject Secret as environment variables**:
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: env-from-secret
+spec:
+  containers:
+    - name: app
+      image: nginx
+      env:
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: app-secret
+              key: DB_PASSWORD
+```
+
+**Inject all Secret keys into a Pod**:
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: env-from-secret-all
+spec:
+  containers:
+    - name: app
+      image: busybox
+      envFrom:
+        - secretRef:
+            name: app-secret
+```
+
+**Tip**: Use ConfigMap for configuration values and Secret for sensitive values.
+
+### How to create ConfigMap
+There are two common ways to create a ConfigMap: imperative and declarative.
+
+#### Imperative way
+```bash
+kubectl create configmap app-config --from-literal=APP_ENV=production --from-literal=LOG_LEVEL=debug
+```
+
+**Check it**:
+```bash
+kubectl get configmap app-config -o yaml
+```
+
+#### Declarative way
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+data:
+  APP_ENV: production
+  LOG_LEVEL: debug
+```
+
+```bash
+kubectl apply -f configmap.yaml
+```
+
+### Create ConfigMap and inject to Pod
+**Example 1: ConfigMap and Pod in the same file**:
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+data:
+  APP_ENV: production
+  LOG_LEVEL: debug
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod-with-configmap
+spec:
+  containers:
+    - name: app
+      image: nginx
+      env:
+        - name: APP_ENV
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: APP_ENV
+        - name: LOG_LEVEL
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: LOG_LEVEL
+```
+
+**Example 2: ConfigMap defined separately**:
+```yaml
+# configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+data:
+  APP_ENV: production
+  LOG_LEVEL: info
+```
+
+```yaml
+# pod.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod-with-configmap-separate
+spec:
+  containers:
+    - name: app
+      image: nginx
+      envFrom:
+        - configMapRef:
+            name: app-config
+```
+
+```bash
+kubectl apply -f configmap.yaml
+kubectl apply -f pod.yaml
+```
+
+### ENV, Single ENV, and Volume way
+There are multiple patterns for injecting configuration values.
+
+#### 1. Direct env list in the Pod
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: direct-env
+spec:
+  containers:
+    - name: app
+      image: nginx
+      env:
+        - name: MODE
+          value: prod
+        - name: PORT
+          value: "8080"
+```
+
+#### 2. Single environment variable from ConfigMap or Secret
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: single-env-ref
+spec:
+  containers:
+    - name: app
+      image: nginx
+      env:
+        - name: APP_ENV
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: APP_ENV
+```
+
+#### 3. Volume way
+A ConfigMap can also be mounted as a file inside the container using a volume.
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+data:
+  app.properties: |
+    APP_ENV=production
+    LOG_LEVEL=debug
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: configmap-volume
+spec:
+  containers:
+    - name: app
+      image: nginx
+      volumeMounts:
+        - name: config-volume
+          mountPath: /etc/config
+  volumes:
+    - name: config-volume
+      configMap:
+        name: app-config
+```
+
+Inside the container, the files appear in `/etc/config`.
+
+**Summary**: Environment variables are the standard way to pass configuration to containers. Use literal `env` entries for simple values, ConfigMap for non-sensitive settings, and Secret for sensitive information. You can inject them directly as environment variables or mount them as files through a volume.
+
+---
 
 ---
 
