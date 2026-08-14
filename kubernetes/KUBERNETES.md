@@ -68,6 +68,31 @@
     - [What is security context?](#what-is-security-context)
     - [What is `runAsUser`?](#what-is-runasuser)
     - [What are capabilities?](#what-are-capabilities)
+  - [Resource Requirements](#resource-requirements)
+    - [What is a resource in Kubernetes?](#what-is-a-resource-in-kubernetes)
+    - [Problems resources face](#problems-resources-face)
+    - [Specifying resources in a pod](#specifying-resources-in-a-pod)
+    - [CPU counts and memory metrics](#cpu-counts-and-memory-metrics)
+      - [CPU](#cpu)
+      - [Memory](#memory)
+    - [What happens when pods exceed CPU?](#what-happens-when-pods-exceed-cpu)
+    - [What happens when pods exceed Memory?](#what-happens-when-pods-exceed-memory)
+    - [Explain throttling](#explain-throttling)
+    - [Explain OOM](#explain-oom)
+    - [Pod default configuration](#pod-default-configuration)
+    - [What happens without limits?](#what-happens-without-limits)
+    - [What happens with limits?](#what-happens-with-limits)
+    - [Can we throttle memory like CPU?](#can-we-throttle-memory-like-cpu)
+  - [LimitRange](#limitrange)
+    - [What is LimitRange?](#what-is-limitrange)
+    - [When to use LimitRange](#when-to-use-limitrange)
+    - [LimitRange example: CPU default and minimum (Declarative)](#limitrange-example-cpu-default-and-minimum-declarative)
+    - [LimitRange example: Memory default and maximum (Declarative)](#limitrange-example-memory-default-and-maximum-declarative)
+    - [Imperative example: LimitRange with CPU](#imperative-example-limitrange-with-cpu)
+    - [Imperative example: LimitRange with Memory](#imperative-example-limitrange-with-memory)
+  - [Resource Quotas](#resource-quotas)
+    - [What are resource quotas?](#what-are-resource-quotas)
+    - [Why are Resource Quotas configured at the Namespace level?](#why-are-resource-quotas-configured-at-the-namespace-level)
   - [Services](#services)
     - [Service Type: ClusterIP](#service-type-clusterip)
     - [Service Type: NodePort](#service-type-nodeport)
@@ -1737,16 +1762,12 @@ kubectl describe deployment myapp-deploy
 ---
 
 ## Kubernetes Pod Security Context
-**Quick explanation**: A Pod security context defines the security settings for a pod or container. It controls things like which user should run the process, whether the container can run privileged, and which Linux capabilities are allowed. This is one of the main ways Kubernetes enforces least privilege.
+**Quick explanation**: A Pod security context defines the security settings for a pod. It controls things like which user should run the process, whether the container can escalate privileges, and which Linux capabilities are allowed. This is one of the main ways Kubernetes enforces least privilege.
 
 ### What is security context?
-A `securityContext` is a Kubernetes field used to define security-related configuration for a Pod or an individual container.
+A `securityContext` is a Kubernetes field used to define security-related configuration for a Pod.
 
-It can be placed at:
-- Pod level: applies to all containers in the pod
-- Container level: applies to a specific container only
-
-Example:
+It is defined at the Pod `spec` level:
 ```yaml
 apiVersion: v1
 kind: Pod
@@ -1757,12 +1778,11 @@ spec:
     runAsUser: 1000
     runAsGroup: 3000
     fsGroup: 2000
-  containers:
-    - name: app
-      image: nginx
-      securityContext:
-        allowPrivilegeEscalation: false
-        readOnlyRootFilesystem: true
+    runAsNonRoot: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
 ```
 
 This controls how the container process runs and what privileges it has at runtime.
@@ -1801,18 +1821,10 @@ metadata:
 spec:
   securityContext:
     runAsUser: 1000
+    runAsNonRoot: true
   containers:
     - name: app
       image: nginx
-```
-
-You can also set it at the container level:
-```yaml
-containers:
-  - name: app
-    image: nginx
-    securityContext:
-      runAsUser: 1000
 ```
 
 **Good practice**: run application containers as a non-root UID whenever possible.
@@ -1820,7 +1832,7 @@ containers:
 ---
 
 ### What are capabilities?
-Linux capabilities are fine-grained privileges that can be granted to a process instead of giving full root access. In Kubernetes, capabilities are controlled with the `securityContext.capabilities` field.
+Linux capabilities are fine-grained privileges that can be granted to a process instead of giving full root access. In Kubernetes, capabilities are controlled with the Pod `securityContext.capabilities` field.
 
 Example:
 ```yaml
@@ -1829,15 +1841,15 @@ kind: Pod
 metadata:
   name: capabilities-demo
 spec:
+  securityContext:
+    capabilities:
+      drop:
+        - ALL
+      add:
+        - NET_BIND_SERVICE
   containers:
     - name: app
       image: nginx
-      securityContext:
-        capabilities:
-          drop:
-            - ALL
-          add:
-            - NET_BIND_SERVICE
 ```
 
 This means:
@@ -1861,19 +1873,510 @@ Common examples of capabilities:
 - add only the capability the app truly needs
 - avoid `privileged: true` unless absolutely required
 
-**Example of locking down a container**:
+**Example of locking down a pod**:
 ```yaml
-securityContext:
-  runAsNonRoot: true
-  allowPrivilegeEscalation: false
-  capabilities:
-    drop:
-      - ALL
+spec:
+  securityContext:
+    runAsNonRoot: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
 ```
 
 This is a recommended hardening pattern for many workloads.
 
-**Summary**: `securityContext` gives you control over container security, `runAsUser` sets the Linux user ID, and `capabilities` let you grant or remove specific privileges in a granular way instead of giving full root power.
+**Summary**: `securityContext` gives you control over pod security, `runAsUser` sets the Linux user ID, and `capabilities` let you grant or remove specific privileges in a granular way instead of giving full root power.
+
+---
+
+## Resource Requirements
+**Quick explanation**: In Kubernetes, resources are the CPU and memory a pod or container is allowed to use. They are important because the scheduler and kubelet need to know how much compute a workload needs in order to place it on a node and keep the cluster stable.
+
+### What is a resource in Kubernetes?
+Resources are the compute limits and requests assigned to containers. The two main ones are:
+- **CPU**
+- **Memory**
+
+Kubernetes uses these values to decide:
+- where to place a pod
+- how much of the node's capacity can be consumed
+- whether a pod can run smoothly or be throttled or killed
+
+Example:
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: app-pod
+spec:
+  containers:
+    - name: app
+      image: nginx
+      resources:
+        requests:
+          cpu: "250m"
+          memory: "128Mi"
+        limits:
+          cpu: "500m"
+          memory: "256Mi"
+```
+
+**requests**: the minimum guaranteed amount of resource the container can rely on.
+**limits**: the maximum amount the container is allowed to use.
+
+---
+
+### Problems resources face
+When resources are not managed correctly, problems can happen such as:
+- a pod gets scheduled onto a node that is already overloaded
+- one workload consumes too much CPU and slows down other workloads
+- a container tries to use more memory than the node can provide
+- the node becomes unstable or unresponsive
+- containers are throttled or evicted
+
+This is why Kubernetes has requests, limits, and scheduling logic.
+
+---
+
+### Specifying resources in a pod
+You define resources under each container's `resources` block.
+
+Example:
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: web
+spec:
+  containers:
+    - name: web
+      image: nginx
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "64Mi"
+        limits:
+          cpu: "200m"
+          memory: "128Mi"
+```
+
+This tells Kubernetes:
+- minimum requested: 100m CPU and 64Mi memory
+- upper bound: 200m CPU and 128Mi memory
+
+**Important**: if you do not specify requests, scheduling may still work, but the pod has no guaranteed minimum.
+
+---
+
+### CPU counts and memory metrics
+#### CPU
+CPU is measured in cores or fractional cores.
+
+Common CPU units:
+- `100m` = 0.1 CPU core
+- `500m` = 0.5 CPU core
+- `1` = 1 CPU core
+
+Example:
+```yaml
+resources:
+  requests:
+    cpu: "500m"
+  limits:
+    cpu: "1"
+```
+
+This means the pod requests half a CPU and is limited to one full CPU.
+
+#### Memory
+Memory is measured in bytes and often expressed with binary units such as:
+- `Mi` = mebibytes
+- `Gi` = gibibytes
+- `M` = megabytes
+- `G` = gigabytes
+
+Common examples:
+- `128Mi`
+- `512Mi`
+- `1Gi`
+
+Example:
+```yaml
+resources:
+  requests:
+    memory: "256Mi"
+  limits:
+    memory: "512Mi"
+```
+
+This means the pod needs at least 256Mi and can use up to 512Mi before it is killed or restarted depending on the policy.
+
+---
+
+### What happens when pods exceed CPU?
+When a pod exceeds its CPU limit, Kubernetes does not instantly kill it. Instead, the CPU is throttled.
+
+**CPU throttling**:
+- if the pod tries to use more CPU than its limit, the kernel reduces the amount of CPU time given to the process
+- the application may become slower, respond more slowly, or appear laggy
+- CPU throttling is usually a performance issue, not an immediate crash
+
+Example:
+```yaml
+resources:
+  limits:
+    cpu: "500m"
+```
+
+If the container tries to use 1 CPU but is limited to 500m, it will be restricted and may run slower.
+
+---
+
+### What happens when pods exceed Memory?
+Memory is different from CPU. If a pod exceeds its memory limit, the container may be terminated.
+
+**OOM (Out Of Memory)**:
+- the kernel or runtime detects the process has used too much memory
+- if it exceeds available memory or limit, the process can be killed
+- Kubernetes may restart the container depending on the restart policy
+
+Typical symptoms:
+- container restarts repeatedly
+- pod enters `CrashLoopBackOff`
+- application logs show OOMKilled events
+
+Example:
+```bash
+kubectl get pods
+kubectl describe pod myapp
+```
+
+You may see events such as:
+```text
+OOMKilled
+```
+
+---
+
+### Explain throttling
+**CPU throttling** is the process of limiting how much CPU time a process receives.
+
+- It is a built-in Linux scheduler behavior
+- It is usually not a crash; it is a slowdown
+- It happens when CPU requests/limits are not enough for workload demand
+
+Common effect:
+- slow database queries
+- delayed API responses
+- not enough processing power for background jobs
+
+**Key point**: CPU can be throttled. Memory usually cannot be gracefully throttled in the same way; it often leads to OOM or eviction.
+
+---
+
+### Explain OOM
+OOM stands for Out Of Memory.
+
+This happens when a process tries to use more memory than the node or container limit allows. In Kubernetes, the container runtime or Linux kernel may kill the process to prevent full node instability.
+
+Examples:
+- Java app with a memory leak
+- Node app processing large payloads
+- database using too much memory
+
+When OOM occurs, Kubernetes often shows:
+```bash
+kubectl describe pod myapp
+```
+
+and the pod may restart with status like:
+- `CrashLoopBackOff`
+- `Error`
+- `OOMKilled`
+
+---
+
+### Pod default configuration
+If you do not set resource requests or limits, the pod still runs, but it has no explicit CPU/memory policy.
+
+This means:
+- no guaranteed minimum resources
+- no upper bound
+- it may consume as much as the node allows
+- other workloads can be affected
+
+Example of a pod without resource settings:
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: no-resource-pod
+spec:
+  containers:
+    - name: app
+      image: nginx
+```
+
+This is allowed, but it is not ideal for production workloads.
+
+---
+
+### What happens without limits?
+If you set only requests and no limits:
+- the pod gets guaranteed minimum resources
+- but it can use more if the node has free capacity
+- the system cannot strictly stop it from using extra memory or CPU
+
+Example:
+```yaml
+resources:
+  requests:
+    cpu: "200m"
+    memory: "128Mi"
+```
+
+This gives a guaranteed baseline but not a hard maximum.
+
+---
+
+### What happens with limits?
+If you set limits:
+- the pod cannot exceed the configured maximum
+- CPU can be throttled
+- memory can trigger OOM or termination if exceeded
+- scheduling is based on requests, while enforcement is done by the kubelet
+
+Example:
+```yaml
+resources:
+  requests:
+    cpu: "250m"
+    memory: "128Mi"
+  limits:
+    cpu: "500m"
+    memory: "256Mi"
+```
+
+**Summary**: requests are for scheduling and minimum guarantees; limits are for protection and control.
+
+---
+
+### Can we throttle memory like CPU?
+Not in the same way as CPU.
+
+- **CPU** can be throttled by the CFS scheduler.
+- **Memory** cannot normally be throttled in a clean, graceful way.
+- If memory exceeds limit, the process may be OOM-killed.
+
+So memory is enforced by a hard limit and failure condition, while CPU is more often controlled by quota and throttling.
+
+**Best practice**:
+- set sane CPU limits to avoid throttling
+- set realistic memory limits to avoid OOM
+- monitor application behavior with metrics
+
+---
+
+## LimitRange
+**Quick explanation**: A `LimitRange` is a Kubernetes object that defines default resource requests and limits for Pods or containers in a namespace. It helps enforce a minimum and maximum size for CPU and memory so workloads do not consume too much cluster capacity.
+
+### What is LimitRange?
+A `LimitRange` sets default and minimum/maximum values for resources in a namespace.
+
+It is often used to:
+- enforce a standard resource policy
+- prevent misconfigured pods from consuming too much memory or CPU
+- ensure developers get sensible defaults
+- reduce cluster instability
+
+---
+
+### When to use LimitRange
+Use a `LimitRange` when:
+- multiple teams share a cluster
+- you want default resource values for all pods in a namespace
+- you want to avoid out-of-control workloads
+- you want to enforce allowed CPU and memory ranges per namespace
+
+This is especially useful for shared dev/test/prod namespaces.
+
+---
+
+### LimitRange example: CPU default and minimum (Declarative)
+```yaml
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: cpu-limitrange
+  namespace: dev
+spec:
+  limits:
+    - type: Container
+      min:
+        cpu: "100m"
+      max:
+        cpu: "500m"
+      default:
+        cpu: "200m"
+      defaultRequest:
+        cpu: "100m"
+```
+
+This means in `dev` namespace:
+- minimum CPU per container is 100m
+- maximum CPU per container is 500m
+- default CPU limit is 200m
+- default CPU request is 100m
+
+---
+
+### LimitRange example: Memory default and maximum (Declarative)
+```yaml
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: memory-limitrange
+  namespace: dev
+spec:
+  limits:
+    - type: Container
+      min:
+        memory: "64Mi"
+      max:
+        memory: "512Mi"
+      default:
+        memory: "128Mi"
+      defaultRequest:
+        memory: "64Mi"
+```
+
+This means in `dev` namespace:
+- minimum memory per container is 64Mi
+- maximum memory per container is 512Mi
+- default memory limit is 128Mi
+- default memory request is 64Mi
+
+---
+
+### Imperative example: LimitRange with CPU
+```bash
+kubectl create namespace dev
+kubectl create configmap cpu-limitrange --from-literal=... 
+```
+
+The better and more common imperative style for LimitRange is to create a YAML file and then apply it:
+
+```bash
+cat <<EOF > limitrange-cpu.yaml
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: cpu-limitrange
+  namespace: dev
+spec:
+  limits:
+    - type: Container
+      min:
+        cpu: "100m"
+      max:
+        cpu: "500m"
+      default:
+        cpu: "200m"
+      defaultRequest:
+        cpu: "100m"
+EOF
+
+kubectl apply -f limitrange-cpu.yaml
+```
+
+**Check it**:
+```bash
+kubectl get limitrange -n dev
+kubectl describe limitrange cpu-limitrange -n dev
+```
+
+---
+
+### Imperative example: LimitRange with Memory
+```bash
+cat <<EOF > limitrange-memory.yaml
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: memory-limitrange
+  namespace: dev
+spec:
+  limits:
+    - type: Container
+      min:
+        memory: "64Mi"
+      max:
+        memory: "512Mi"
+      default:
+        memory: "128Mi"
+      defaultRequest:
+        memory: "64Mi"
+EOF
+
+kubectl apply -f limitrange-memory.yaml
+```
+
+**Check it**:
+```bash
+kubectl get limitrange -n dev
+kubectl describe limitrange memory-limitrange -n dev
+```
+
+**Key point**: CPU and memory controls are usually defined in separate LimitRange resources or in separate `limits` blocks for clarity.
+
+---
+
+## Resource Quotas
+**Quick explanation**: A `ResourceQuota` restricts the total amount of compute resources a namespace can consume. It is used to stop one team or application from using the entire cluster capacity.
+
+### What are resource quotas?
+A ResourceQuota is a namespace-level policy that limits the total resources used across all objects in that namespace.
+
+Example:
+```yaml
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: compute-quota
+  namespace: dev
+spec:
+  hard:
+    requests.cpu: "4"
+    requests.memory: "8Gi"
+    limits.cpu: "8"
+    limits.memory: "16Gi"
+    pods: "10"
+```
+
+This means the `dev` namespace can have total resource consumption up to:
+- 4 CPU requested
+- 8Gi memory requested
+- 8 CPU limit
+- 16Gi memory limit
+- 10 pods max
+
+---
+
+### Why are Resource Quotas configured at the Namespace level?
+A namespace is the boundary where related workloads are grouped together. Resource Quotas are applied at namespace level because:
+- teams often share a cluster but need isolated resource usage
+- each namespace can be assigned a fair share of cluster capacity
+- this prevents one namespace from starving others
+- it helps support multi-tenant or team-based environments
+
+In other words, ResourceQuota is used to control the total sum of resources in a namespace, while LimitRange is used to control per-pod or per-container defaults and boundaries.
+
+**Example comparison**:
+- **LimitRange**: applies to individual containers or pods
+- **ResourceQuota**: applies to all workloads in a namespace combined
+
+**Summary**: LimitRange controls the minimum, maximum, and default values per object, while ResourceQuota controls the total usage allowed across all objects in a namespace.
 
 ---
 
