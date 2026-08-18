@@ -139,6 +139,19 @@
     - [Service Type: ClusterIP](#service-type-clusterip)
     - [Service Type: NodePort](#service-type-nodeport)
     - [Service Type: LoadBalancer](#service-type-loadbalancer)
+  - [Network Policies](#network-policies)
+    - [How it works with other Kubernetes components](#how-it-works-with-other-kubernetes-components)
+    - [Example: frontend, api, and db pods](#example-frontend-api-and-db-pods)
+      - [1. Allow frontend to reach the api](#1-allow-frontend-to-reach-the-api)
+      - [2. Allow api to reach the db](#2-allow-api-to-reach-the-db)
+      - [3. Allow API to egress to DB](#3-allow-api-to-egress-to-db)
+    - [Ingress and Egress](#ingress-and-egress)
+    - [Example: a restricted policy with DNS egress and specific app access](#example-a-restricted-policy-with-dns-egress-and-specific-app-access)
+    - [Pod selector and namespace selector](#pod-selector-and-namespace-selector)
+      - [Pod selector](#pod-selector)
+      - [Namespace selector](#namespace-selector)
+    - [Example with another server outside the cluster](#example-with-another-server-outside-the-cluster)
+    - [Summary](#summary)
   - [kubectl Explain and API Resources](#kubectl-explain-and-api-resources)
   - [kubectl Imperative Commands](#kubectl-imperative-commands)
 
@@ -3433,6 +3446,480 @@ kubectl expose deployment web --port=80 --target-port=80 --type=LoadBalancer
 ```
 
 **Summary**: Services are the networking layer that connects pods together and gives them stable access paths. Without Services, Kubernetes workloads would be hard to reach reliably because pods are dynamic and short-lived.
+
+---
+
+## Network Policies
+**Quick explanation**: A `NetworkPolicy` is a Kubernetes resource that controls which pods are allowed to send or receive traffic. It adds a security layer at the network level so you can restrict communication between workloads instead of allowing all traffic by default.
+
+**What is a NetworkPolicy?**
+A `NetworkPolicy` is a rule set applied to a group of pods. It decides:
+- which incoming traffic is allowed to reach them
+- which outgoing traffic is allowed from them
+- what namespaces or pods can communicate with them
+
+It is commonly used to enforce the principle of least privilege inside a cluster.
+
+**Why it matters**:
+- restrict traffic between microservices
+- protect databases from unexpected access
+- isolate dev, test, and prod workloads
+- reduce lateral movement inside the cluster
+- work well with labels, namespaces, and services
+
+**Important default behavior**:
+- If a pod is not selected by any `NetworkPolicy`, Kubernetes usually allows all traffic to and from it.
+- Once a pod is selected by a `NetworkPolicy`, the rules in that policy apply.
+- If you define an ingress rule, then only matching incoming traffic is allowed; other ingress is denied.
+- If you define an egress rule, then only matching outgoing traffic is allowed; other egress is denied.
+
+This means network policy is a way to create allow-lists instead of open networking.
+
+---
+
+### How it works with other Kubernetes components
+`NetworkPolicy` works best when combined with labels, namespaces, and services:
+
+- **Labels** identify which pods belong to a service or application
+- **Namespaces** let you allow traffic only from a specific team or environment
+- **Services** route traffic to selected pods
+- **Ingress controllers** can be allowed explicitly using namespace and pod selectors
+- **External IPs** can be allowed with `ipBlock` rules
+
+**Real-world pattern**:
+1. `frontend` pods receive traffic from users or ingress controller
+2. `api` pods receive traffic only from `frontend`
+3. `db` pods allow traffic only from `api`
+4. `db` blocks all other sources
+
+This gives a clean request path:
+- Users -> Frontend
+- Frontend -> API
+- API -> Database
+- Database does not allow random pod access
+
+---
+
+### Example: frontend, api, and db pods
+Assume these pod labels:
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: frontend
+  labels:
+    app: frontend
+spec:
+  containers:
+    - name: frontend
+      image: nginx
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: api
+  labels:
+    app: api
+spec:
+  containers:
+    - name: api
+      image: nginx
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: db
+  labels:
+    app: db
+spec:
+  containers:
+    - name: db
+      image: postgres
+```
+
+Now we apply policies to restrict communication.
+
+#### 1. Allow frontend to reach the api
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-frontend-to-api
+spec:
+  podSelector:
+    matchLabels:
+      app: api
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: frontend
+      ports:
+        - protocol: TCP
+          port: 8080
+```
+
+This means:
+- only pods labeled `app=frontend` can connect to `app=api`
+- only port `8080` is allowed
+- other sources are denied
+
+#### 2. Allow api to reach the db
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-api-to-db
+spec:
+  podSelector:
+    matchLabels:
+      app: db
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: api
+      ports:
+        - protocol: TCP
+          port: 5432
+```
+
+This means:
+- the database accepts traffic only from `api` pods
+- `db` does not accept direct traffic from `frontend`
+- the database is protected by a narrow allow rule
+
+#### 3. Allow API to egress to DB
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api-egress-to-db
+spec:
+  podSelector:
+    matchLabels:
+      app: api
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: db
+      ports:
+        - protocol: TCP
+          port: 5432
+```
+
+This tells the `api` pod:
+- it may send traffic to the `db` pod
+- other outbound traffic is blocked
+
+**Example flow**:
+- `frontend` -> `api` allowed
+- `api` -> `db` allowed
+- `frontend` -> `db` denied
+- any other pod -> `db` denied
+
+---
+
+### Ingress and Egress
+**Ingress** is traffic coming into a pod or a set of pods.
+
+```yaml
+ingress:
+  - from:
+      - podSelector:
+          matchLabels:
+            app: frontend
+    ports:
+      - protocol: TCP
+        port: 80
+```
+
+This means inbound connections to the selected pod are allowed only when they come from pods labeled `app=frontend` on TCP port `80`.
+
+**Egress** is traffic leaving a pod.
+
+```yaml
+egress:
+  - to:
+      - podSelector:
+          matchLabels:
+            app: db
+    ports:
+      - protocol: TCP
+        port: 5432
+```
+
+This means the selected pod may send traffic only to `app=db` on TCP port `5432`.
+
+**How ingress and egress work together**:
+- Ingress controls who can connect to a pod.
+- Egress controls where a pod is allowed to connect.
+- A pod can have only ingress rules, only egress rules, or both.
+- The intent is to control both directions of communication for security.
+
+**Simple rule**:
+- Ingress = traffic entering the pod
+- Egress = traffic leaving the pod
+
+---
+
+### Example: a restricted policy with DNS egress and specific app access
+This example is commonly used when a pod must talk to a small set of internal services while still being allowed to resolve names over DNS.
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: internal-policy
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      name: internal
+  policyTypes:
+  - Egress
+  - Ingress
+  ingress:
+    - {}
+  egress:
+    - to:
+      - podSelector:
+          matchLabels:
+            name: mysql
+      ports:
+        - protocol: TCP
+          port: 3306
+    - to:
+      - podSelector:
+          matchLabels:
+            name: payroll
+      ports:
+        - protocol: TCP
+          port: 8080
+    - ports:
+      - protocol: TCP
+        port: 53
+      - protocol: UDP
+        port: 53
+```
+
+**What each part means**:
+
+- `metadata.name: internal-policy`
+  - This is the name of the NetworkPolicy object.
+
+- `metadata.namespace: default`
+  - The policy is applied inside the `default` namespace.
+
+- `spec.podSelector.matchLabels.name: internal`
+  - This selects the pods that this policy applies to.
+  - Only pods labeled `name=internal` are affected.
+  - If a pod is not labeled `internal`, this policy does not apply to it.
+
+- `spec.policyTypes:`
+  - `Egress` means outbound traffic from the selected pods is controlled.
+  - `Ingress` means inbound traffic to the selected pods is controlled.
+  - Because both are listed, this policy governs both directions.
+
+- `ingress:
+    - {}`
+  - This is a special allow-all ingress rule.
+  - The empty object `{}` means: allow inbound traffic from any source, on any port, to the selected pods.
+  - In other words, the selected pods accept all incoming traffic.
+  - This is intentionally broad and is usually only used for trusted internal apps or for a short-lived testing setup.
+  - If you wanted to restrict ingress, you would replace `{}` with explicit `from:` rules such as podSelector, namespaceSelector, or ipBlock.
+
+- `egress:`
+  - This is a list of allowed outbound rules. Any outbound traffic not matching one of these rules is denied.
+
+- Rule 1: MySQL access
+  ```yaml
+  - to:
+    - podSelector:
+        matchLabels:
+          name: mysql
+    ports:
+      - protocol: TCP
+        port: 3306
+  ```
+  - This allows the selected pods to connect only to pods labeled `name=mysql`.
+  - The protocol is TCP and the allowed port is `3306`.
+  - This is a narrow, least-privilege rule for the database port.
+
+- Rule 2: Payroll service access
+  ```yaml
+  - to:
+    - podSelector:
+        matchLabels:
+          name: payroll
+    ports:
+      - protocol: TCP
+        port: 8080
+  ```
+  - This allows traffic only to pods labeled `name=payroll`.
+  - Only TCP port `8080` is allowed.
+  - This keeps the app from reaching unrelated services on arbitrary ports.
+
+- Rule 3: DNS access by port only
+  ```yaml
+  - ports:
+      - protocol: TCP
+        port: 53
+      - protocol: UDP
+        port: 53
+  ```
+  - This is the important part: there is no `to:` field here.
+  - That means this rule applies to all destinations, not just a podSelector, namespaceSelector, or ipBlock.
+  - It allows DNS traffic on TCP/53 and UDP/53 to any destination that resolves the query.
+  - This is commonly used for cluster DNS lookups, because applications need to resolve service names such as `mysql`, `payroll`, or external hostnames.
+
+**Why the final DNS rule is different**:
+- `podSelector`, `namespaceSelector`, and `ipBlock` are used to restrict who or where traffic is allowed to go.
+- In the DNS rule, there is no selector or CIDR block, so the rule is not limited to a specific pod, namespace, or IP range.
+- It is instead restricted only by `port` and `protocol`.
+- This makes it a port-based exception: the pod can send DNS traffic anywhere, but only on port `53`.
+- This is useful because DNS requests are usually sent to the cluster DNS service or a configured upstream resolver, and the actual IP target may be dynamic or managed by Kubernetes.
+
+**Important note about `ingress: - {}`**:
+- `ingress: - {}` is equivalent to saying: allow all inbound traffic.
+- It does not use a `from:` selector and therefore does not restrict source pods, source namespaces, or external CIDR ranges.
+- This is broader than the egress rules and is often the opposite of a locked-down network policy.
+
+**What this pattern gives you**:
+- `internal` pods are allowed to reach MySQL on port `3306`.
+- `internal` pods are allowed to reach payroll on port `8080`.
+- `internal` pods are allowed to do DNS lookups on port `53`.
+- Inbound traffic is open to all sources.
+
+**When to use this pattern**:
+- During development or testing when you need a quick allowlist for specific services and DNS.
+- In environments where only the outbound connection paths matter and ingress is intentionally left open.
+- As a starting point before tightening ingress with more specific `from:` rules.
+
+**Security warning**:
+- The rule `ingress: - {}` is very permissive and should not be used for production workloads unless you truly want unrestricted inbound access.
+- A stronger production pattern is to restrict ingress using `podSelector`, `namespaceSelector`, and `ipBlock` so only trusted sources can connect.
+
+This is the clearest example of how a NetworkPolicy can combine:
+- a pod label selector for the target workload
+- port-specific access for service traffic
+- a port-only egress exception for DNS
+- and a broad ingress rule when intentionally open
+
+---
+
+### Pod selector and namespace selector
+A `NetworkPolicy` usually selects pods using a `podSelector`.
+
+#### Pod selector
+```yaml
+podSelector:
+  matchLabels:
+    app: api
+```
+
+This means the policy applies to the pods labeled `app=api`.
+
+#### Namespace selector
+A namespace selector lets you match by namespace labels instead of just pod labels.
+
+```yaml
+from:
+  - namespaceSelector:
+      matchLabels:
+        team: platform
+    podSelector:
+      matchLabels:
+        app: ingress
+```
+
+This means:
+- allow traffic only from pods in namespaces labeled `team=platform`
+- and only from pods labeled `app=ingress`
+
+This is useful when:
+- a frontend in one namespace talks to a backend in another namespace
+- an ingress controller runs in a dedicated namespace
+- you want to allow traffic from an isolated platform namespace only
+
+**Common pattern**: combine `namespaceSelector` and `podSelector` to allow only a specific service in a trusted namespace.
+
+---
+
+### Example with another server outside the cluster
+Sometimes an external system such as a VPN server, bastion host, or on-prem app needs to reach a pod directly. You can allow it using `ipBlock`.
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-external-admin
+spec:
+  podSelector:
+    matchLabels:
+      app: api
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: 203.0.113.40/32
+      ports:
+        - protocol: TCP
+          port: 8080
+```
+
+This allows only the external IP `203.0.113.40/32` to reach the `api` pod on port `8080`.
+
+**Example with an ingress controller namespace**:
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-controller
+spec:
+  podSelector:
+    matchLabels:
+      app: frontend
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 80
+```
+
+This allows traffic from the ingress controller namespace to the frontend pod, which is the normal pattern when an ingress controller sits in front of application services.
+
+**Important note**:
+- `ipBlock` is used for external IP ranges, not Kubernetes label matching.
+- `namespaceSelector` and `podSelector` are used for in-cluster traffic.
+- If you expose a service using `LoadBalancer`, `NodePort`, or `Ingress`, the source IP seen by the pod may be the load balancer or ingress controller, not the original client.
+
+---
+
+### Summary
+A `NetworkPolicy` is the Kubernetes way to control network traffic between workloads. It works by selecting pods with labels and then defining allow rules for ingress and egress. When combined with services, namespaces, and selectors, it creates a clear trust model like:
+- users and ingress reach frontend
+- frontend reaches api
+- api reaches db
+- db is not reachable from other unauthorized pods
+
+This is a key building block for secure multi-tier applications in Kubernetes.
 
 ---
 
