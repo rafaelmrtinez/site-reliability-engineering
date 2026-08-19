@@ -154,6 +154,20 @@
     - [Summary](#summary)
   - [kubectl Explain and API Resources](#kubectl-explain-and-api-resources)
   - [kubectl Imperative Commands](#kubectl-imperative-commands)
+  - [StatefulSets](#statefulsets)
+    - [What is a StatefulSet?](#what-is-a-statefulset)
+    - [When to use StatefulSets](#when-to-use-statefulsets)
+    - [Database primary and replicas](#database-primary-and-replicas)
+    - [ServiceName and headless Services](#servicename-and-headless-services)
+    - [Pod management policy](#pod-management-policy)
+  - [Headless Services](#headless-services)
+    - [What is a headless Service?](#what-is-a-headless-service)
+    - [Problems solved and use cases](#problems-solved-and-use-cases)
+    - [Headless Service manifests](#headless-service-manifests)
+    - [Headless Service for a Deployment vs StatefulSet](#headless-service-for-a-deployment-vs-statefulset)
+  - [Storage in StatefulSets](#storage-in-statefulsets)
+    - [VolumeClaimTemplates](#volumeclaimtemplates)
+    - [What problem does a VolumeClaimTemplate solve?](#what-problem-does-a-volumeclaimtemplate-solve)
 
 **Certified Kubernetes Application Developer**
 - https://www.cncf.io/certification/ckad/
@@ -4052,5 +4066,223 @@ kubectl apply -f deployment.yaml
 ```
 
 **Summary**: Imperative commands are great for quick tasks and learning, while declarative YAML is the standard approach for repeatable, managed, and versioned Kubernetes configuration.
+
+---
+
+## StatefulSets
+**Quick explanation**: A StatefulSet manages Pods that need a stable identity, stable network name, and stable storage. Unlike a Deployment, its Pods are not interchangeable: each Pod receives a predictable ordinal name such as `db-0`, `db-1`, and `db-2`.
+
+### What is a StatefulSet?
+A StatefulSet is a Kubernetes workload controller for stateful applications. It provides:
+- stable Pod names and ordinals
+- stable DNS names when used with a headless Service
+- a separate persistent volume claim for each replica
+- controlled creation, scaling, and termination of replicas
+
+The StatefulSet does not make an application stateful by itself. The database or application must still implement clustering, leader election, replication, failover, and recovery.
+
+### When to use StatefulSets
+Use a StatefulSet when replicas need one or more of the following:
+- a persistent identity, such as `db-0`
+- a predictable network address for peer discovery
+- storage that stays associated with the same replica
+- ordered startup or shutdown
+
+Use a Deployment for stateless replicas where any Pod can handle any request and Pods can be replaced interchangeably.
+
+### Database primary and replicas
+A common database pattern is one primary database and one or more replicas. A StatefulSet gives the database members predictable identities, but it does not configure database replication automatically.
+
+For example, an application can conventionally use `db-0` as the initial primary and `db-1`, `db-2`, and later replicas as standbys. The database image, an operator, or initialization scripts must perform the real work:
+- initialize the primary
+- configure replica connection settings
+- copy or stream data to replicas
+- promote a replica when the primary fails
+
+The terms **primary** and **replica** are preferred over the older **master** and **slave** terminology. A production database normally uses a purpose-built operator, such as a PostgreSQL or MySQL operator, rather than relying on a bare StatefulSet alone.
+
+### ServiceName and headless Services
+`spec.serviceName` identifies the governing Service for the StatefulSet. That Service should be headless, which means `clusterIP: None`.
+
+With a StatefulSet named `db` and a headless Service named `db`, the Pods receive stable DNS names:
+- `db-0.db.default.svc.cluster.local`
+- `db-1.db.default.svc.cluster.local`
+- `db-2.db.default.svc.cluster.local`
+
+The shorter form `db-0.db` normally works for clients in the same namespace. The Service does not provide one virtual load-balanced IP; DNS returns the individual Pod addresses instead.
+
+### Pod management policy
+`podManagementPolicy` controls how the StatefulSet creates and deletes Pods:
+- `OrderedReady` is the default. Kubernetes creates Pods in ordinal order and waits for each Pod to become Ready before creating the next one. Deletion happens in reverse order.
+- `Parallel` allows all replicas to be created or terminated without waiting for ordinal order. This is useful when the application can safely start members independently.
+
+`OrderedReady` is often useful for a primary-first database bootstrap. It does not replace database-level readiness checks or failover logic.
+
+**Sample primary/replica-oriented manifest**:
+The manifest below provides the Kubernetes identity and storage foundation for three database members. It is an instructional example; the `DB_ROLE` values do not configure replication in the MySQL server by themselves.
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: db
+  labels:
+    app: db
+spec:
+  clusterIP: None
+  selector:
+    app: db
+  ports:
+    - name: mysql
+      port: 3306
+      targetPort: 3306
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: db
+spec:
+  serviceName: db
+  replicas: 3
+  podManagementPolicy: OrderedReady
+  selector:
+    matchLabels:
+      app: db
+  template:
+    metadata:
+      labels:
+        app: db
+    spec:
+      containers:
+        - name: mysql
+          image: mysql:8.0
+          ports:
+            - name: mysql
+              containerPort: 3306
+          env:
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: db-secret
+                  key: root-password
+            - name: DB_ROLE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/mysql
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 10Gi
+```
+
+In this example, the claims are named `data-db-0`, `data-db-1`, and `data-db-2`. Deleting or recreating a Pod does not delete its claim automatically, so the replacement Pod can reattach to the same storage.
+
+---
+
+## Headless Services
+**Quick explanation**: A headless Service is a Service with `clusterIP: None`. Kubernetes does not assign it a virtual cluster IP or load-balance through a single Service IP. Instead, DNS returns the addresses of the selected Pods.
+
+### What is a headless Service?
+A normal Service provides one stable virtual IP and distributes traffic to matching endpoints. A headless Service provides service discovery without that virtual IP. Clients can discover and choose individual Pod addresses through DNS.
+
+### Problems solved and use cases
+Headless Services solve problems such as:
+- discovering every member of a cluster rather than one load-balanced endpoint
+- allowing database or consensus members to contact specific peers
+- preserving stable per-Pod DNS names for StatefulSet replicas
+- letting a client implement its own routing, leader selection, or failover behavior
+
+Use them for databases, distributed caches, message brokers, and clustered systems that need peer-to-peer discovery. Do not use one when clients only need a single load-balanced endpoint; a normal `ClusterIP` Service is simpler for that case.
+
+### Headless Service manifests
+The same headless Service pattern can select Pods created by a Deployment:
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-headless
+spec:
+  clusterIP: None
+  selector:
+    app: web
+  ports:
+    - port: 80
+      targetPort: 80
+```
+
+A headless Service for a StatefulSet usually uses the same fields, but its name is also referenced by `spec.serviceName` in the StatefulSet:
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: db
+spec:
+  clusterIP: None
+  selector:
+    app: db
+  ports:
+    - name: mysql
+      port: 3306
+      targetPort: 3306
+```
+
+`clusterIP: None` is the explicit instruction to Kubernetes to create a headless Service. It is not the string value of an IP address; it tells the Service controller to omit the virtual IP and publish Pod endpoints through DNS.
+
+### Headless Service for a Deployment vs StatefulSet
+The Service itself does not need a different kind or special StatefulSet-only fields. In both cases, the important fields are `selector`, `ports`, and `clusterIP: None`.
+
+The difference is the workload behind the Service:
+- A Deployment uses interchangeable Pods. DNS may return the current set of Pod IPs, but there is no built-in stable ordinal name such as `web-0.web`.
+- A StatefulSet uses stable ordinal Pod names and requires `serviceName` to establish the governing headless Service relationship.
+- `volumeClaimTemplates` belongs to the StatefulSet, not the Service. A Deployment does not gain per-ordinal storage from using a headless Service.
+
+Fields that go away compared with a normal load-balanced Service: no `clusterIP` address is allocated, so clients should not expect one virtual endpoint. The Service still retains its selector, ports, namespace, labels, and optional settings such as `publishNotReadyAddresses`.
+
+---
+
+## Storage in StatefulSets
+### VolumeClaimTemplates
+A `volumeClaimTemplates` entry is a template for PersistentVolumeClaims that Kubernetes creates for each StatefulSet Pod. The template is placed under `spec`, alongside `serviceName`, `replicas`, and `template`.
+
+Example:
+```yaml
+volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes:
+        - ReadWriteOnce
+      storageClassName: fast-ssd
+      resources:
+        requests:
+          storage: 20Gi
+```
+
+When the StatefulSet is named `db`, the volume named `data` is mounted by convention as:
+- `data-db-0` for `db-0`
+- `data-db-1` for `db-1`
+
+The `storageClassName` selects how the persistent volume is provisioned. The requested size and access mode must be supported by the storage provider.
+
+### What problem does a VolumeClaimTemplate solve?
+Without a claim template, every replica would need a separately created and correctly mounted PersistentVolumeClaim. That is difficult to automate and easy to misassociate when Pods are recreated or scaled.
+
+A claim template solves this by automatically creating one stable claim per ordinal replica and reconnecting the same claim when that replica is recreated. This prevents a replacement for `db-1` from accidentally using `db-0`'s data.
+
+Important behavior:
+- scaling up creates new claims for new ordinals
+- deleting a StatefulSet or Pod does not normally delete the claims
+- deleting a claim can permanently delete data, depending on the volume and reclaim policies
+- a StatefulSet manages the claim lifecycle, but backups, encryption, replication, and restore procedures are still application and storage responsibilities
 
 ---
